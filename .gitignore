@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+
+# App runtime files
+temp/
+output/
+seamless.log
+session.json
+
+# User media (never commit personal clips/photos)
+pics/
+videos/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.mp3
+*.wav
+*.aac
+*.flac
+
+# Compiled binaries and bundled engines (platform-specific, not source)
+bin/
+SeamlessProductionHouse.exe
+*.exe
+*.pkg
+*.dmg
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/

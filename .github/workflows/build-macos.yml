@@ -1,0 +1,78 @@
+name: Build macOS App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # Homebrew FFmpeg is dynamically linked; PyInstaller will walk and bundle
+      # all referenced dylibs automatically because we list the binary in
+      # the spec's `binaries` array.
+      - name: Install FFmpeg via Homebrew
+        run: |
+          brew install ffmpeg
+          mkdir -p bin
+          cp "$(which ffmpeg)"  bin/ffmpeg
+          cp "$(which ffprobe)" bin/ffprobe
+          chmod +x bin/ffmpeg bin/ffprobe
+
+      - name: Build .app with PyInstaller
+        run: pyinstaller SeamlessProductionHouse-macOS.spec --noconfirm
+
+      - name: Create DMG
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "Seamless Production House" \
+            --volicon "dist/SeamlessProductionHouse.app/Contents/Resources/icon-windowed.icns" \
+            --window-size 540 380 \
+            --icon-size 120 \
+            --icon "SeamlessProductionHouse.app" 130 190 \
+            --app-drop-link 410 190 \
+            --no-internet-enable \
+            "SeamlessProductionHouse-macOS.dmg" \
+            "dist/SeamlessProductionHouse.app" \
+          || \
+          create-dmg \
+            --volname "Seamless Production House" \
+            --window-size 540 380 \
+            --icon-size 120 \
+            --icon "SeamlessProductionHouse.app" 130 190 \
+            --app-drop-link 410 190 \
+            --no-internet-enable \
+            "SeamlessProductionHouse-macOS.dmg" \
+            "dist/SeamlessProductionHouse.app"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SeamlessProductionHouse-macOS
+          path: SeamlessProductionHouse-macOS.dmg
+          retention-days: 30
+
+      - name: Attach DMG to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SeamlessProductionHouse-macOS.dmg
