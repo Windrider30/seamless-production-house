@@ -8,7 +8,6 @@ from __future__ import annotations
 import atexit
 import subprocess
 import sys
-import tempfile
 import threading
 from pathlib import Path
 from typing import Callable
@@ -238,8 +237,6 @@ def apply_text_overlay(
     if not text.strip():
         return
 
-    import tempfile as _tf
-
     ffmpeg = str(get_ffmpeg())
     enc = encoder_flags(encoder)
 
@@ -253,11 +250,11 @@ def apply_text_overlay(
     }
     y_expr = y_map.get(position, "(h-text_h)/2")
 
-    # Write text to a temp file — avoids all escaping issues with drawtext
-    with _tf.NamedTemporaryFile(mode="w", suffix=".txt",
-                                delete=False, encoding="utf-8") as tf:
-        tf.write(text)
-        textfile = tf.name
+    # Write text to a file in TEMP_DIR — avoids all escaping issues with drawtext
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    textfile_path = TEMP_DIR / "text_overlay.txt"
+    textfile_path.write_text(text, encoding="utf-8")
+    textfile = str(textfile_path)
 
     try:
         # Escape the textfile path the same way we escape fontfile:
@@ -290,26 +287,27 @@ def apply_text_overlay(
         ]
         _run_ffmpeg(cmd)
     finally:
-        Path(textfile).unlink(missing_ok=True)
+        textfile_path.unlink(missing_ok=True)
 
 
 def concat_segments(segments: list[Path], output: Path, encoder: str) -> None:
     """Losslessly join completed segments into the final file."""
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
-                                    delete=False, encoding="utf-8") as f:
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    list_file = TEMP_DIR / "concat_segments_list.txt"
+    with open(list_file, "w", encoding="utf-8") as f:
         for s in segments:
-            f.write(f"file '{str(s)}'\n")
-        list_file = f.name
+            safe = str(s).replace("\\", "/")
+            f.write(f"file '{safe}'\n")
     try:
         _run_ffmpeg([
             str(get_ffmpeg()), "-y",
             "-f", "concat", "-safe", "0",
-            "-i", list_file,
+            "-i", str(list_file),
             "-c", "copy",
             str(output),
         ])
     finally:
-        Path(list_file).unlink(missing_ok=True)
+        list_file.unlink(missing_ok=True)
 
 
 class RenderJob:
@@ -659,5 +657,8 @@ class RenderJob:
         normalize_audio(with_music, self.output_path)
 
         session_store.clear()
+        # Clean up all temp files now that the output is finalised
+        import shutil as _shutil
+        _shutil.rmtree(self.temp_dir, ignore_errors=True)
         self._report(1.0, "Render complete!")
         log_info(f"Render complete → {self.output_path}")

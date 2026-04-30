@@ -8,15 +8,16 @@ each clip, which is essentially free.  This keeps CPU renders fast.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
-import tempfile
+import sys
 from pathlib import Path
 
-from src.config import BIN_DIR, RIFE_EXE_NAME, CROSSFADE_DURATION
+from src.config import BIN_DIR, RIFE_EXE_NAME, CROSSFADE_DURATION, TEMP_DIR
 from src.engine.hardware import encoder_flags
-from src.utils.path_checker import get_ffmpeg, get_rife
+from src.utils.path_checker import get_ffmpeg, get_ffprobe, get_rife
 
-CREATE_NO_WINDOW = 0x08000000
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -31,13 +32,12 @@ def _run(cmd: list[str]) -> None:
 
 def get_duration(path: Path) -> float:
     """Return clip duration in seconds via ffprobe."""
-    ffmpeg = get_ffmpeg()
-    if not ffmpeg:
+    ffprobe = get_ffprobe()
+    if not ffprobe:
         return 0.0
-    probe = str(ffmpeg).replace("ffmpeg.exe", "ffprobe.exe")
     try:
         r = subprocess.run(
-            [probe, "-v", "quiet", "-print_format", "json",
+            [str(ffprobe), "-v", "quiet", "-print_format", "json",
              "-show_format", str(path)],
             capture_output=True, text=True, timeout=8,
             creationflags=CREATE_NO_WINDOW,
@@ -172,8 +172,9 @@ def crossfade_transition(clip_a: Path, clip_b: Path, output: Path,
     # no duplicate frames between body and transition segments.
     overlap  = duration
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
+    tmp_path = TEMP_DIR / "xfade_tmp"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    try:
         tail_a   = tmp_path / "tail_a.mp4"
         head_b   = tmp_path / "head_b.mp4"
 
@@ -207,6 +208,8 @@ def crossfade_transition(clip_a: Path, clip_b: Path, output: Path,
               "-filter_complex", filter_graph,
               "-map", "[v]", "-map", "[a]",
               ] + enc_flags + ["-bf", "0", "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", str(output)])
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
 
 
 def morph_transition(clip_a: Path, clip_b: Path, output: Path,
@@ -231,27 +234,34 @@ def morph_transition(clip_a: Path, clip_b: Path, output: Path,
         if candidates:
             model_path = candidates[0]
 
+    tmp_path = TEMP_DIR / "morph_tmp"
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    rife_ok = False
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path  = Path(tmp)
-            frame_a   = tmp_path / "frame_a.png"
-            frame_b   = tmp_path / "frame_b.png"
-            morph_dir = tmp_path / "morph"
-            morph_dir.mkdir()
+        frame_a   = tmp_path / "frame_a.png"
+        frame_b   = tmp_path / "frame_b.png"
+        morph_dir = tmp_path / "morph"
+        morph_dir.mkdir(exist_ok=True)
 
-            _extract_last_frame(clip_a, frame_a)
-            _run([str(get_ffmpeg()), "-y",
-                  "-i", str(clip_b), "-frames:v", "1", "-q:v", "2", str(frame_b)])
+        _extract_last_frame(clip_a, frame_a)
+        _run([str(get_ffmpeg()), "-y",
+              "-i", str(clip_b), "-frames:v", "1", "-q:v", "2", str(frame_b)])
 
-            rife_cmd = [str(rife),
-                        "-0", str(frame_a), "-1", str(frame_b),
-                        "-o", str(morph_dir), "-n", str(num_frames)]
-            if model_path:
-                rife_cmd += ["-m", str(model_path)]
-            _run(rife_cmd)
+        rife_cmd = [str(rife),
+                    "-0", str(frame_a), "-1", str(frame_b),
+                    "-o", str(morph_dir), "-n", str(num_frames)]
+        if model_path:
+            rife_cmd += ["-m", str(model_path)]
+        _run(rife_cmd)
 
-            _frames_to_clip(morph_dir, fps, output)
+        _frames_to_clip(morph_dir, fps, output)
+        rife_ok = True
     except Exception:
+        pass
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+    if not rife_ok:
         # RIFE failed (no Vulkan support, driver too old, etc.) — use crossfade
         crossfade_transition(clip_a, clip_b, output,
                              duration=duration, encoder=encoder)
@@ -267,18 +277,18 @@ def concat_clips(clips: list[Path], output: Path) -> None:
         raise ValueError("concat_clips: empty clip list")
 
     ffmpeg = str(get_ffmpeg())
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
-                                    delete=False, encoding="utf-8") as f:
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    list_file = TEMP_DIR / "concat_clips_list.txt"
+    with open(list_file, "w", encoding="utf-8") as f:
         for c in clips:
             safe = str(c).replace("\\", "/")
             f.write(f"file '{safe}'\n")
-        list_file = f.name
 
     try:
         _run([ffmpeg, "-y", "-f", "concat", "-safe", "0",
-              "-i", list_file, "-c", "copy", str(output)])
+              "-i", str(list_file), "-c", "copy", str(output)])
     finally:
-        Path(list_file).unlink(missing_ok=True)
+        list_file.unlink(missing_ok=True)
 
 
 # Keep old name as alias so nothing else breaks
