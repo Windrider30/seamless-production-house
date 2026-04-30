@@ -11,6 +11,8 @@ from src.config import (
     APP_DIR, C, GENRE_NAMES, GENRES,
     CONTENT_TYPE_NAMES, CONTENT_TYPES,
     RESOLUTION_OPTIONS, FPS_OPTIONS,
+    SLIDESHOW_RESOLUTIONS, TEXT_COLORS, TEXT_POSITIONS,
+    available_fonts,
 )
 
 
@@ -162,6 +164,161 @@ class SettingsPanel(ctk.CTkScrollableFrame):
             command=self._on_pins_changed,
         ).pack(anchor="w", padx=28, pady=(0, 10))
 
+        # ── Section: Intro / Outro Text ──────────────────────────────────
+        self._section("INTRO / OUTRO TEXT")
+
+        ctk.CTkLabel(
+            self, text="Leave blank for no text overlay.",
+            font=ctk.CTkFont(size=10), text_color=C["muted"], anchor="w",
+        ).pack(fill="x", padx=12, pady=(0, 6))
+
+        _label(self, "Intro Text").pack(fill="x", padx=12, pady=(0, 2))
+        self._intro_text_entry = ctk.CTkEntry(
+            self, placeholder_text="e.g.  Opening Title",
+            fg_color=C["card"], border_color=C["border"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+        )
+        self._intro_text_entry.pack(fill="x", **pad)
+
+        _label(self, "Outro Text").pack(fill="x", padx=12, pady=(0, 2))
+        self._outro_text_entry = ctk.CTkEntry(
+            self, placeholder_text="e.g.  Thanks for watching",
+            fg_color=C["card"], border_color=C["border"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+        )
+        self._outro_text_entry.pack(fill="x", **pad)
+
+        # Font picker
+        _label(self, "Font").pack(fill="x", padx=12, pady=(0, 2))
+        font_row = ctk.CTkFrame(self, fg_color="transparent")
+        font_row.pack(fill="x", padx=12, pady=(0, 10))
+
+        self._fonts = available_fonts()           # [(name, path), ...]
+        font_names = [f[0] for f in self._fonts] or ["(no system fonts found)"]
+        self._font_var = ctk.StringVar(value=font_names[0])
+        self._font_dd = ctk.CTkComboBox(
+            font_row, values=font_names,
+            variable=self._font_var,
+            fg_color=C["card"], button_color=C["emerald"],
+            border_color=C["border"], dropdown_fg_color=C["card2"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+        )
+        self._font_dd.pack(side="left", expand=True, fill="x", padx=(0, 6))
+
+        ctk.CTkButton(
+            font_row, text="Browse…", width=72, height=28,
+            fg_color=C["card2"], text_color=C["text"],
+            hover_color=C["border"],
+            font=ctk.CTkFont(size=11),
+            command=self._browse_font,
+        ).pack(side="right")
+
+        # Font size
+        size_row = ctk.CTkFrame(self, fg_color="transparent")
+        size_row.pack(fill="x", padx=12, pady=(0, 4))
+        _label(size_row, "Font Size").pack(side="left")
+        self._font_size_lbl = ctk.CTkLabel(
+            size_row, text="60",
+            font=ctk.CTkFont(size=11), text_color=C["emerald"], width=30,
+        )
+        self._font_size_lbl.pack(side="right")
+
+        self._font_size_slider = ctk.CTkSlider(
+            self, from_=20, to=120, number_of_steps=100,
+            button_color=C["emerald"], button_hover_color=C["emerald_lt"],
+            progress_color=C["emerald_dk"], fg_color=C["card"],
+            command=lambda v: self._font_size_lbl.configure(text=str(int(v))),
+        )
+        self._font_size_slider.set(60)
+        self._font_size_slider.pack(fill="x", padx=12, pady=(0, 8))
+
+        # Color + Position on one row
+        cp_row = ctk.CTkFrame(self, fg_color="transparent")
+        cp_row.pack(fill="x", padx=12, pady=(0, 10))
+
+        color_col = ctk.CTkFrame(cp_row, fg_color="transparent")
+        color_col.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        _label(color_col, "Color").pack(anchor="w")
+        self._text_color_var = ctk.StringVar(value="White")
+        ctk.CTkComboBox(
+            color_col, values=list(TEXT_COLORS.keys()),
+            variable=self._text_color_var,
+            fg_color=C["card"], button_color=C["emerald"],
+            border_color=C["border"], dropdown_fg_color=C["card2"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+        ).pack(fill="x")
+
+        pos_col = ctk.CTkFrame(cp_row, fg_color="transparent")
+        pos_col.pack(side="right", expand=True, fill="x")
+        _label(pos_col, "Position").pack(anchor="w")
+        self._text_pos_var = ctk.StringVar(value="Center")
+        ctk.CTkComboBox(
+            pos_col, values=TEXT_POSITIONS,
+            variable=self._text_pos_var,
+            fg_color=C["card"], button_color=C["emerald"],
+            border_color=C["border"], dropdown_fg_color=C["card2"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+        ).pack(fill="x")
+
+        # Visible-for duration
+        dur_row = ctk.CTkFrame(self, fg_color="transparent")
+        dur_row.pack(fill="x", padx=12, pady=(0, 4))
+        _label(dur_row, "Visible for").pack(side="left")
+        self._text_dur_lbl = ctk.CTkLabel(
+            dur_row, text="3.0 s",
+            font=ctk.CTkFont(size=11), text_color=C["emerald"], width=42,
+        )
+        self._text_dur_lbl.pack(side="right")
+
+        self._text_dur_slider = ctk.CTkSlider(
+            self, from_=0.5, to=15.0, number_of_steps=145,
+            button_color=C["emerald"], button_hover_color=C["emerald_lt"],
+            progress_color=C["emerald_dk"], fg_color=C["card"],
+            command=lambda v: self._text_dur_lbl.configure(
+                text=f"{v:.1f} s"),
+        )
+        self._text_dur_slider.set(3.0)
+        self._text_dur_slider.pack(fill="x", padx=12, pady=(0, 10))
+
+        # ── Section: Photo Slideshow ──────────────────────────────────────
+        self._section("PHOTO SLIDESHOW")
+
+        ctk.CTkLabel(
+            self, text='Only used when Content Type is "Photo Slideshow".',
+            font=ctk.CTkFont(size=10), text_color=C["muted"],
+            wraplength=220, justify="left", anchor="w",
+        ).pack(fill="x", padx=12, pady=(0, 6))
+
+        _label(self, "Canvas Resolution").pack(fill="x", padx=12, pady=(0, 2))
+        slide_res_keys = list(SLIDESHOW_RESOLUTIONS.keys())
+        self._slide_res_var = ctk.StringVar(value=slide_res_keys[0])
+        ctk.CTkComboBox(
+            self, values=slide_res_keys,
+            variable=self._slide_res_var,
+            fg_color=C["card"], button_color=C["emerald"],
+            border_color=C["border"], dropdown_fg_color=C["card2"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+        ).pack(fill="x", **pad)
+
+        hold_row = ctk.CTkFrame(self, fg_color="transparent")
+        hold_row.pack(fill="x", padx=12, pady=(0, 4))
+        _label(hold_row, "Photo Hold Duration").pack(side="left")
+        self._slide_hold_lbl = ctk.CTkLabel(
+            hold_row, text="5.0 s",
+            font=ctk.CTkFont(size=11), text_color=C["emerald"], width=42,
+        )
+        self._slide_hold_lbl.pack(side="right")
+
+        self._slide_hold_slider = ctk.CTkSlider(
+            self, from_=1.0, to=30.0, number_of_steps=290,
+            button_color=C["emerald"], button_hover_color=C["emerald_lt"],
+            progress_color=C["emerald_dk"], fg_color=C["card"],
+            command=lambda v: self._slide_hold_lbl.configure(
+                text=f"{v:.1f} s"),
+        )
+        self._slide_hold_slider.set(5.0)
+        self._slide_hold_slider.pack(fill="x", padx=12, pady=(0, 10))
+
         # ── Section: Format ──────────────────────────────────────────────
         self._section("FORMAT")
 
@@ -217,6 +374,19 @@ class SettingsPanel(ctk.CTkScrollableFrame):
     def _on_pins_changed(self) -> None:
         if self._on_pin_change:
             self._on_pin_change(self._pin_intro_var.get(), self._pin_outro_var.get())
+
+    def _browse_font(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select Font File",
+            filetypes=[("Font files", "*.ttf *.otf *.ttc"), ("All files", "*.*")],
+        )
+        if path:
+            name = Path(path).stem
+            # Add to the dropdown and select it
+            self._fonts.append((name, path))
+            names = [f[0] for f in self._fonts]
+            self._font_dd.configure(values=names)
+            self._font_var.set(name)
 
     def _on_genre_change(self, value: str) -> None:
         cfg = GENRES.get(value, {})
@@ -274,3 +444,43 @@ class SettingsPanel(ctk.CTkScrollableFrame):
     @property
     def pin_outro(self) -> bool:
         return self._pin_outro_var.get()
+
+    @property
+    def intro_text(self) -> str:
+        return self._intro_text_entry.get().strip()
+
+    @property
+    def outro_text(self) -> str:
+        return self._outro_text_entry.get().strip()
+
+    @property
+    def text_font_path(self) -> str:
+        selected = self._font_var.get()
+        for name, path in self._fonts:
+            if name == selected:
+                return path
+        return ""
+
+    @property
+    def text_size(self) -> int:
+        return int(self._font_size_slider.get())
+
+    @property
+    def text_color(self) -> str:
+        return TEXT_COLORS.get(self._text_color_var.get(), "white")
+
+    @property
+    def text_position(self) -> str:
+        return self._text_pos_var.get()
+
+    @property
+    def text_duration(self) -> float:
+        return round(self._text_dur_slider.get(), 1)
+
+    @property
+    def slideshow_resolution(self) -> tuple[int, int] | None:
+        return SLIDESHOW_RESOLUTIONS.get(self._slide_res_var.get())
+
+    @property
+    def slideshow_hold(self) -> float:
+        return round(self._slide_hold_slider.get(), 1)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from src.utils.path_checker import get_ffmpeg
@@ -9,7 +10,7 @@ from src.utils.path_checker import get_ffmpeg
 # Cached result
 _encoder_cache: str | None = None
 
-CREATE_NO_WINDOW = 0x08000000
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 def _run_ffmpeg(args: list[str]) -> str:

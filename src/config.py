@@ -169,6 +169,11 @@ CONTENT_TYPES: dict[str, dict] = {
         "clip_hold": 8.0, "beat_sync": False,
         "desc": "Slow-paced for background or ambient content",
     },
+    "Photo Slideshow": {
+        "clip_hold": 5.0, "beat_sync": False,
+        "force_resolution": True,
+        "desc": "Photos normalized to a fixed canvas — safe for any mix of portrait, landscape, or square photos",
+    },
 }
 
 CONTENT_TYPE_NAMES = list(CONTENT_TYPES.keys())
@@ -191,6 +196,100 @@ FPS_OPTIONS = {
     "60 fps  (Smooth)":     60,
     "120 fps (HFR)":        120,
 }
+
+# ── Slideshow canvas resolutions ─────────────────────────────────────────────
+SLIDESHOW_RESOLUTIONS: dict[str, tuple[int, int]] = {
+    "1920×1080  (Landscape HD)": (1920, 1080),
+    "3840×2160  (Landscape 4K)": (3840, 2160),
+    "1280×720   (Landscape 720p)": (1280, 720),
+    "1080×1920  (Portrait HD)":  (1080, 1920),
+    "1080×1080  (Square)":       (1080, 1080),
+}
+
+# ── Text overlay options ──────────────────────────────────────────────────────
+TEXT_COLORS: dict[str, str] = {
+    "White":  "white",
+    "Yellow": "yellow",
+    "Black":  "black",
+    "Red":    "red",
+    "Cyan":   "#00d2a8",
+    "Orange": "orange",
+}
+
+TEXT_POSITIONS: list[str] = ["Center", "Top", "Bottom"]
+
+# System fonts — checked by path on each platform; first existing path wins.
+SYSTEM_FONTS: dict[str, dict[str, list[str]]] = {
+    "Arial": {
+        "win32":  ["C:/Windows/Fonts/arial.ttf"],
+        "darwin": ["/Library/Fonts/Arial.ttf",
+                   "/System/Library/Fonts/Supplemental/Arial.ttf"],
+    },
+    "Arial Bold": {
+        "win32":  ["C:/Windows/Fonts/arialbd.ttf"],
+        "darwin": ["/Library/Fonts/Arial Bold.ttf",
+                   "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
+    },
+    "Impact": {
+        "win32":  ["C:/Windows/Fonts/impact.ttf"],
+        "darwin": ["/Library/Fonts/Impact.ttf",
+                   "/System/Library/Fonts/Supplemental/Impact.ttf"],
+    },
+    "Georgia": {
+        "win32":  ["C:/Windows/Fonts/georgia.ttf"],
+        "darwin": ["/Library/Fonts/Georgia.ttf",
+                   "/System/Library/Fonts/Supplemental/Georgia.ttf"],
+    },
+    "Courier New": {
+        "win32":  ["C:/Windows/Fonts/cour.ttf"],
+        "darwin": ["/Library/Fonts/Courier New.ttf",
+                   "/System/Library/Fonts/Supplemental/Courier New.ttf"],
+    },
+    "Verdana": {
+        "win32":  ["C:/Windows/Fonts/verdana.ttf"],
+        "darwin": ["/Library/Fonts/Verdana.ttf",
+                   "/System/Library/Fonts/Supplemental/Verdana.ttf"],
+    },
+    "Trebuchet MS": {
+        "win32":  ["C:/Windows/Fonts/trebuc.ttf"],
+        "darwin": ["/Library/Fonts/Trebuchet MS.ttf",
+                   "/System/Library/Fonts/Supplemental/Trebuchet MS.ttf"],
+    },
+    "Times New Roman": {
+        "win32":  ["C:/Windows/Fonts/times.ttf"],
+        "darwin": ["/Library/Fonts/Times New Roman.ttf",
+                   "/System/Library/Fonts/Supplemental/Times New Roman.ttf"],
+    },
+    "Comic Sans MS": {
+        "win32":  ["C:/Windows/Fonts/comic.ttf"],
+        "darwin": ["/Library/Fonts/Comic Sans MS.ttf",
+                   "/System/Library/Fonts/Supplemental/Comic Sans MS.ttf"],
+    },
+    "Tahoma": {
+        "win32":  ["C:/Windows/Fonts/tahoma.ttf"],
+        "darwin": ["/Library/Fonts/Tahoma.ttf",
+                   "/System/Library/Fonts/Supplemental/Tahoma.ttf"],
+    },
+}
+
+
+def get_font_path(name: str) -> str | None:
+    """Return the first existing filesystem path for a named system font."""
+    for candidate in SYSTEM_FONTS.get(name, {}).get(sys.platform, []):
+        if Path(candidate).exists():
+            return candidate
+    return None
+
+
+def available_fonts() -> list[tuple[str, str]]:
+    """Return [(display_name, path), ...] for fonts found on this system."""
+    result = []
+    for name in SYSTEM_FONTS:
+        path = get_font_path(name)
+        if path:
+            result.append((name, path))
+    return result
+
 
 # ── Downloader URLs ──────────────────────────────────────────────────────────
 RIFE_GITHUB_REPO   = "nihui/rife-ncnn-vulkan"

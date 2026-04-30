@@ -219,6 +219,74 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
     _run_ffmpeg(cmd, progress_cb, base_fraction, fraction_range, total_frames)
 
 
+def apply_text_overlay(
+    src: Path,
+    dest: Path,
+    text: str,
+    font_path: str | None,
+    font_size: int,
+    color: str,
+    position: str,
+    text_duration: float,
+    encoder: str,
+) -> None:
+    """
+    Burn a text overlay into a clip using FFmpeg drawtext.
+    Text is written to a temp file so any characters (quotes, colons, etc.)
+    are handled safely without shell-escaping headaches.
+    """
+    if not text.strip():
+        return
+
+    import tempfile as _tf
+
+    ffmpeg = str(get_ffmpeg())
+    enc = encoder_flags(encoder)
+
+    clip_dur = get_duration(src)
+    vis_dur  = min(text_duration, max(0.5, clip_dur - 0.5))
+
+    y_map = {
+        "Top":    "h*0.08",
+        "Center": "(h-text_h)/2",
+        "Bottom": "h*0.82-text_h",
+    }
+    y_expr = y_map.get(position, "(h-text_h)/2")
+
+    # Write text to a temp file — avoids all escaping issues with drawtext
+    with _tf.NamedTemporaryFile(mode="w", suffix=".txt",
+                                delete=False, encoding="utf-8") as tf:
+        tf.write(text)
+        textfile = tf.name
+
+    try:
+        parts = [
+            f"textfile={textfile}",
+            f"fontsize={font_size}",
+            f"fontcolor={color}",
+            "x=(w-text_w)/2",
+            f"y={y_expr}",
+            f"enable='between(t,0,{vis_dur:.2f})'",
+            "shadowcolor=black@0.6",
+            "shadowx=2",
+            "shadowy=2",
+        ]
+        if font_path and Path(font_path).exists():
+            # Forward slashes work on all platforms; escape the colon in
+            # Windows drive letters (C: → C\:) for the drawtext filter graph.
+            escaped = font_path.replace("\\", "/").replace(":", "\\:")
+            parts.insert(1, f"fontfile={escaped}")
+
+        drawtext = "drawtext=" + ":".join(parts)
+        cmd = [ffmpeg, "-y", "-i", str(src), "-vf", drawtext] + enc + [
+            "-c:a", "copy",
+            str(dest),
+        ]
+        _run_ffmpeg(cmd)
+    finally:
+        Path(textfile).unlink(missing_ok=True)
+
+
 def concat_segments(segments: list[Path], output: Path, encoder: str) -> None:
     """Losslessly join completed segments into the final file."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
@@ -255,6 +323,15 @@ class RenderJob:
         loop_clips: bool = False,
         pin_intro: bool = False,
         pin_outro: bool = False,
+        intro_text: str = "",
+        outro_text: str = "",
+        text_font_path: str = "",
+        text_size: int = 60,
+        text_color: str = "white",
+        text_position: str = "Center",
+        text_duration: float = 3.0,
+        slideshow_resolution: tuple[int, int] | None = None,
+        slideshow_hold: float | None = None,
     ):
         self.clips = clips
         self.music_files = music_files
@@ -269,6 +346,15 @@ class RenderJob:
         self.loop_clips = loop_clips
         self.pin_intro = pin_intro
         self.pin_outro = pin_outro
+        self.intro_text = intro_text
+        self.outro_text = outro_text
+        self.text_font_path = text_font_path
+        self.text_size = text_size
+        self.text_color = text_color
+        self.text_position = text_position
+        self.text_duration = text_duration
+        self.slideshow_resolution = slideshow_resolution
+        self.slideshow_hold = slideshow_hold
         self.cancelled = False
         self.temp_dir = TEMP_DIR / "render"
         # Clear stale temp files unless resuming a previous session
@@ -332,15 +418,24 @@ class RenderJob:
             return
 
         # ── Step 1: Pre-convert all clips to normalised H.264/AAC ────────
-        # Determine target resolution from the first clip so all output clips
-        # share identical dimensions — required for the concat demuxer (stream
-        # copy across segments) and the xfade filter (same-size inputs).
+        # Photo Slideshow: use the user-specified canvas so every photo is
+        # scaled/padded to the SAME size regardless of its original dimensions.
+        # This prevents the size-mismatch crashes that plague mixed-orientation
+        # photo sets (portrait vs landscape vs square).
+        # All other modes: derive target from the first clip.
         target_resolution: tuple[int, int] | None = None
-        if self.clips:
+        if self.content_cfg.get("force_resolution") and self.slideshow_resolution:
+            target_resolution = self.slideshow_resolution
+        elif self.clips:
             _, fw, fh = _probe_streams(self.clips[0])
             if fw and fh:
                 # Force even dimensions for H.264 (chroma sub-sampling)
                 target_resolution = (fw // 2 * 2, fh // 2 * 2)
+
+        # Photo Slideshow: override clip_hold with user-selected duration
+        hold_duration = float(self.content_cfg["clip_hold"])
+        if self.slideshow_hold is not None:
+            hold_duration = self.slideshow_hold
 
         converted: list[Path] = []
         for i, clip in enumerate(self.clips[self.start_clip:], start=self.start_clip):
@@ -356,7 +451,7 @@ class RenderJob:
                         progress_cb=self.progress_cb,
                         base_fraction=base,
                         fraction_range=(1 / total * 0.25),
-                        hold_duration=float(self.content_cfg["clip_hold"]),
+                        hold_duration=hold_duration,
                         target_resolution=target_resolution,
                     )
                 except Exception as exc:
@@ -369,6 +464,43 @@ class RenderJob:
             pre = [self.temp_dir / f"conv_{i:04d}.mp4"
                    for i in range(self.start_clip)]
             converted = pre + converted
+
+        # ── Optional: Burn text into intro / outro ───────────────────────
+        if self.intro_text.strip() and self.pin_intro and len(converted) > 0:
+            self._report(0.26, "Applying intro text overlay…")
+            text_path = self.temp_dir / "text_intro.mp4"
+            try:
+                apply_text_overlay(
+                    converted[0], text_path,
+                    text=self.intro_text,
+                    font_path=self.text_font_path or None,
+                    font_size=self.text_size,
+                    color=self.text_color,
+                    position=self.text_position,
+                    text_duration=self.text_duration,
+                    encoder=self.encoder,
+                )
+                converted[0] = text_path
+            except Exception as exc:
+                log_error(exc, "intro text overlay")
+
+        if self.outro_text.strip() and self.pin_outro and len(converted) > 1:
+            self._report(0.27, "Applying outro text overlay…")
+            text_path = self.temp_dir / "text_outro.mp4"
+            try:
+                apply_text_overlay(
+                    converted[-1], text_path,
+                    text=self.outro_text,
+                    font_path=self.text_font_path or None,
+                    font_size=self.text_size,
+                    color=self.text_color,
+                    position=self.text_position,
+                    text_duration=self.text_duration,
+                    encoder=self.encoder,
+                )
+                converted[-1] = text_path
+            except Exception as exc:
+                log_error(exc, "outro text overlay")
 
         # ── Optional: Loop clips to fill music duration ──────────────────
         if self.loop_clips and self.music_files and len(converted) > 0:

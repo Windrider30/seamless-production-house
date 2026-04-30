@@ -11,7 +11,7 @@ import sys
 import customtkinter as ctk
 
 from src.config import C, IMAGE_EXTENSIONS
-from src.utils.path_checker import get_ffmpeg
+from src.utils.path_checker import get_ffmpeg, get_ffprobe
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 PAGE_SIZE = 50  # clips shown per page
@@ -19,13 +19,12 @@ PAGE_SIZE = 50  # clips shown per page
 
 def _probe_clip(path: Path) -> dict:
     """Return basic clip metadata via ffprobe."""
-    ffprobe = get_ffmpeg()
-    if not ffprobe:
+    ffprobe_path = get_ffprobe()
+    if not ffprobe_path:
         return {}
-    probe_exe = str(ffprobe).replace("ffmpeg.exe", "ffprobe.exe")
     try:
         result = subprocess.run(
-            [probe_exe, "-v", "quiet", "-print_format", "json",
+            [str(ffprobe_path), "-v", "quiet", "-print_format", "json",
              "-show_streams", "-show_format", str(path)],
             capture_output=True, text=True, timeout=8,
             creationflags=CREATE_NO_WINDOW,

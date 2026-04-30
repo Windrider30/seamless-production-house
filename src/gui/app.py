@@ -354,6 +354,15 @@ class App(_Base):
             loop_clips=self._settings.loop_clips,
             pin_intro=self._settings.pin_intro,
             pin_outro=self._settings.pin_outro,
+            intro_text=self._settings.intro_text,
+            outro_text=self._settings.outro_text,
+            text_font_path=self._settings.text_font_path,
+            text_size=self._settings.text_size,
+            text_color=self._settings.text_color,
+            text_position=self._settings.text_position,
+            text_duration=self._settings.text_duration,
+            slideshow_resolution=self._settings.slideshow_resolution,
+            slideshow_hold=self._settings.slideshow_hold,
         )
         threading.Thread(target=self._render_job.run, daemon=True).start()
 
