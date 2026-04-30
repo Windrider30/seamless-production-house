@@ -257,49 +257,51 @@ def apply_text_overlay(
     }
     y_expr = y_map.get(position, "(h-text_h)/2")
 
-    # Write text to a file in TEMP_DIR — avoids all escaping issues with drawtext
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    textfile_path = TEMP_DIR / "text_overlay.txt"
-    textfile_path.write_text(text, encoding="utf-8")
-    textfile = str(textfile_path)
+    # Escape text for the drawtext text= option.
+    # Only : and \ need escaping; all other chars (spaces, apostrophes, etc.)
+    # are passed literally via subprocess (no shell involved).
+    escaped_text = text.replace("\\", "\\\\").replace(":", "\\:").replace("%", "%%")
 
-    try:
-        # Wrap path values in single quotes inside the drawtext filter string.
-        # Single quotes are FFmpeg's filter-graph quoting mechanism — anything
-        # between '...' is treated as a literal string, so the Windows drive
-        # letter colon (C:) is preserved without needing the \: escape that
-        # broke in FFmpeg 8.1's stricter option parser.
-        q_textfile = "'" + textfile.replace("\\", "/") + "'"
-        parts = [
-            f"textfile={q_textfile}",
-            f"fontsize={font_size}",
-            f"fontcolor={color}",
-            "x=(w-text_w)/2",
-            f"y={y_expr}",
-            f"enable='between(t,{start_time:.2f},{end_time:.2f})'",
-            # Dark box behind text for readability
-            "box=1",
-            "boxcolor=black@0.5",
-            "boxborderw=12",
-            # Drop shadow for depth
-            "shadowcolor=black@0.8",
-            "shadowx=2",
-            "shadowy=2",
-        ]
-        if font_path and Path(font_path).exists():
-            q_font = "'" + font_path.replace("\\", "/") + "'"
-            parts.insert(1, f"fontfile={q_font}")
+    # FFmpeg 8.1 broke both \: and single-quote quoting for Windows drive-letter
+    # colons (C:) inside filter option values — the option parser splits on ALL
+    # colons before quoting is applied.
+    # Fix: use text= instead of textfile= (no path in the filter at all), and
+    # strip the drive letter from the fontfile path so C:/path → /path.
+    # FFmpeg resolves /path relative to the current drive (C:), so the file is
+    # found correctly as long as it's on the same drive as the binary (it always
+    # is — both live under APP_DIR).
+    import re as _re
+    def _nodrive(p: str) -> str:
+        return _re.sub(r'^[A-Za-z]:', '', p.replace("\\", "/"))
 
-        drawtext = "drawtext=" + ":".join(parts)
-        cmd = [ffmpeg, "-y", "-i", str(src),
-               "-vf", drawtext,
-               ] + sw_enc + [
-            "-c:a", "copy",
-            str(dest),
-        ]
-        _run_ffmpeg(cmd)
-    finally:
-        textfile_path.unlink(missing_ok=True)
+    parts = [
+        f"text={escaped_text}",
+        f"fontsize={font_size}",
+        f"fontcolor={color}",
+        "x=(w-text_w)/2",
+        f"y={y_expr}",
+        # No quotes around enable expr — between(t,x,y) has no colons to protect
+        f"enable=between(t,{start_time:.2f},{end_time:.2f})",
+        # Dark box behind text for readability
+        "box=1",
+        "boxcolor=black@0.5",
+        "boxborderw=12",
+        # Drop shadow for depth
+        "shadowcolor=black@0.8",
+        "shadowx=2",
+        "shadowy=2",
+    ]
+    if font_path and Path(font_path).exists():
+        parts.insert(1, f"fontfile={_nodrive(font_path)}")
+
+    drawtext = "drawtext=" + ":".join(parts)
+    cmd = [ffmpeg, "-y", "-i", str(src),
+           "-vf", drawtext,
+           ] + sw_enc + [
+        "-c:a", "copy",
+        str(dest),
+    ]
+    _run_ffmpeg(cmd)
 
 
 def concat_segments(segments: list[Path], output: Path, encoder: str) -> None:
