@@ -172,6 +172,8 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
             "-vf", scale_vf,
         ] + enc + [
             "-t", f"{hold_duration:.3f}",
+            "-g", "90",
+            "-bf", "0",
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
             "-movflags", "+faststart",
             "-shortest",
@@ -191,6 +193,8 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
     video_filters = ["-vf", scale_vf]
 
     cmd = [ffmpeg, "-y"] + inputs + video_filters + enc + [
+        "-g", "90",                  # keyframe every 3 s — fast seeking, no decoder spin
+        "-bf", "0",                  # no B-frames — clean DTS for concat demuxer
         "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
         "-movflags", "+faststart",
         "-shortest",

@@ -155,5 +155,11 @@ def normalize_audio(video_path: Path, output: Path,
         "-af", af,
         "-c:v", "copy",
         "-c:a", "aac", "-b:a", "192k",
+        # Write the moov atom (seek index) at the START of the file.
+        # Without this the index lives at the end — any player opening the
+        # file must seek to the very end to read the index before it can begin
+        # decoding.  On a slow drive (USB, NAS, SD card) this causes the player
+        # to appear completely locked up for many seconds or indefinitely.
+        "-movflags", "+faststart",
         str(output),
     ])

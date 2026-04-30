@@ -88,7 +88,13 @@ def trim_reencode(src: Path, dest: Path,
     # B-frames produce negative DTS at the start of each segment; when the
     # concat demuxer adds the previous segment's duration, DTS goes backward
     # across the join point and the decoder produces block corruption.
-    cmd += enc + ["-bf", "0", "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", str(dest)]
+    #
+    # -g 90: force a keyframe at least every 90 frames (3 seconds at 30fps).
+    # libx264's default GOP is 250 frames (8.3 s); NVENC can be even larger.
+    # Without this, seeking requires the player/decoder to scan back up to 8+
+    # seconds of compressed data to find a keyframe, spiking CPU to 100%.
+    cmd += enc + ["-bf", "0", "-g", "90",
+                  "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", str(dest)]
     _run(cmd)
 
 
