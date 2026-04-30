@@ -280,16 +280,22 @@ def apply_text_overlay(
         f"fontcolor={color}",
         "x=(w-text_w)/2",
         f"y={y_expr}",
-        # No quotes around enable expr — between(t,x,y) has no colons to protect
-        f"enable=between(t,{start_time:.2f},{end_time:.2f})",
-        # Dark box behind text for readability
+        # Dark box behind text for readability.
+        # Use hex alpha (0xRRGGBBAA) instead of color@alpha notation —
+        # the @ char can confuse FFmpeg 8.1's filter option tokenizer.
         "box=1",
-        "boxcolor=black@0.5",
+        "boxcolor=0x00000088",
         "boxborderw=12",
         # Drop shadow for depth
-        "shadowcolor=black@0.8",
+        "shadowcolor=0x000000CC",
         "shadowx=2",
         "shadowy=2",
+        # enable= MUST be last: FFmpeg 8.1's timeline expression parser
+        # greedily consumes the option tokens that follow it (treating
+        # ':box=' as part of the expression), leaving '1' as a dangling
+        # token that fails option-name validation.  Placing enable last
+        # means there is nothing after it for the greedy parser to eat.
+        f"enable=between(t\\,{start_time:.2f}\\,{end_time:.2f})",
     ]
     if font_path and Path(font_path).exists():
         parts.insert(1, f"fontfile={_nodrive(font_path)}")
