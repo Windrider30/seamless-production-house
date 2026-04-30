@@ -264,11 +264,14 @@ def apply_text_overlay(
     textfile = str(textfile_path)
 
     try:
-        # Escape the textfile path the same way we escape fontfile:
-        # forward slashes everywhere, colon in Windows drive letter escaped.
-        escaped_textfile = textfile.replace("\\", "/").replace(":", "\\:")
+        # Wrap path values in single quotes inside the drawtext filter string.
+        # Single quotes are FFmpeg's filter-graph quoting mechanism — anything
+        # between '...' is treated as a literal string, so the Windows drive
+        # letter colon (C:) is preserved without needing the \: escape that
+        # broke in FFmpeg 8.1's stricter option parser.
+        q_textfile = "'" + textfile.replace("\\", "/") + "'"
         parts = [
-            f"textfile={escaped_textfile}",
+            f"textfile={q_textfile}",
             f"fontsize={font_size}",
             f"fontcolor={color}",
             "x=(w-text_w)/2",
@@ -284,10 +287,8 @@ def apply_text_overlay(
             "shadowy=2",
         ]
         if font_path and Path(font_path).exists():
-            # Forward slashes work on all platforms; escape the colon in
-            # Windows drive letters (C: → C\:) for the drawtext filter graph.
-            escaped = font_path.replace("\\", "/").replace(":", "\\:")
-            parts.insert(1, f"fontfile={escaped}")
+            q_font = "'" + font_path.replace("\\", "/") + "'"
+            parts.insert(1, f"fontfile={q_font}")
 
         drawtext = "drawtext=" + ":".join(parts)
         cmd = [ffmpeg, "-y", "-i", str(src),

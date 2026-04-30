@@ -275,8 +275,13 @@ class App(_Base):
         log_info(f"Loaded {len(clips)} clips.")
 
     def _on_music_dropped(self, music: list[Path]) -> None:
-        self._music = music
-        log_info(f"Loaded {len(music)} music tracks.")
+        # Accumulate: add new tracks to the existing playlist so the user
+        # can build a multi-song playlist by loading files one at a time.
+        combined = list(dict.fromkeys(self._music + music))  # preserve order, deduplicate
+        self._music = combined
+        # Update the drop zone label to show the running total
+        self._drop_panel.music_zone._set_count(len(self._music))
+        log_info(f"Added {len(music)} music track(s). Playlist total: {len(self._music)}")
 
     # ── Pre-flight ────────────────────────────────────────────────────────────
     def _run_preflight(self) -> None:
