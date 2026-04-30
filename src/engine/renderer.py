@@ -238,7 +238,11 @@ def apply_text_overlay(
         return
 
     ffmpeg = str(get_ffmpeg())
-    enc = encoder_flags(encoder)
+    # Always use software encoder for text overlay — NVENC/AMF + drawtext
+    # (a software-only filter) can fail silently on many driver versions.
+    # Intro/outro clips are short so CPU speed is not a concern.
+    sw_enc = ["-c:v", "libx264", "-preset", "faster", "-crf", "23",
+              "-pix_fmt", "yuv420p"]
 
     clip_dur = get_duration(src)
     vis_dur  = min(text_duration, max(0.5, clip_dur - 0.5))
@@ -267,7 +271,12 @@ def apply_text_overlay(
             "x=(w-text_w)/2",
             f"y={y_expr}",
             f"enable='between(t,0,{vis_dur:.2f})'",
-            "shadowcolor=black@0.6",
+            # Dark box behind text for readability
+            "box=1",
+            "boxcolor=black@0.5",
+            "boxborderw=12",
+            # Drop shadow for depth
+            "shadowcolor=black@0.8",
             "shadowx=2",
             "shadowy=2",
         ]
@@ -280,8 +289,7 @@ def apply_text_overlay(
         drawtext = "drawtext=" + ":".join(parts)
         cmd = [ffmpeg, "-y", "-i", str(src),
                "-vf", drawtext,
-               "-pix_fmt", "yuv420p",   # required for NVENC after a sw filter
-               ] + enc + [
+               ] + sw_enc + [
             "-c:a", "copy",
             str(dest),
         ]
@@ -479,7 +487,9 @@ class RenderJob:
             converted = pre + converted
 
         # ── Optional: Burn text into intro / outro ───────────────────────
-        if self.intro_text.strip() and self.pin_intro and len(converted) > 0:
+        # Text applies whenever the user typed something — pin state is
+        # independent (pin controls looping, not text visibility).
+        if self.intro_text.strip() and len(converted) > 0:
             self._report(0.26, "Applying intro text overlay…")
             text_path = self.temp_dir / "text_intro.mp4"
             try:
@@ -497,7 +507,7 @@ class RenderJob:
             except Exception as exc:
                 log_error(exc, "intro text overlay")
 
-        if self.outro_text.strip() and self.pin_outro and len(converted) > 1:
+        if self.outro_text.strip() and len(converted) > 1:
             self._report(0.27, "Applying outro text overlay…")
             text_path = self.temp_dir / "text_outro.mp4"
             try:

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
-from src.utils.path_checker import get_ffmpeg
+from src.utils.path_checker import get_ffmpeg, get_ffprobe
 
-CREATE_NO_WINDOW = 0x08000000
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 def _run(cmd: list[str]) -> None:
@@ -93,6 +94,8 @@ def mix_music_under_video(video_path: Path, music_files: list[Path],
         # Original clip audio is discarded — for a montage app the music IS
         # the audio track, and mixing clip audio in causes the original sounds
         # (including any music already in a video clip) to bleed through.
+        # -stream_loop -1 on the music input loops it indefinitely so it always
+        # fills the full video duration. -shortest then cuts at video end.
         filter_complex = (
             f"[1:a]afade=t=in:st=0:d={fade_in_seconds},"
             f"volume={music_volume}[aout]"
@@ -101,6 +104,7 @@ def mix_music_under_video(video_path: Path, music_files: list[Path],
         cmd = [
             ffmpeg, "-y",
             "-i", str(video_path),
+            "-stream_loop", "-1",   # loop music to fill full video length
             "-i", str(loop_audio),
             "-filter_complex", filter_complex,
             "-map", "0:v", "-map", "[aout]",
@@ -116,13 +120,12 @@ def mix_music_under_video(video_path: Path, music_files: list[Path],
 def _get_duration(path: Path) -> float:
     """Quick ffprobe duration check."""
     import json
-    ffmpeg = get_ffmpeg()
-    if not ffmpeg:
+    probe = get_ffprobe()
+    if not probe:
         return 0.0
-    probe = str(ffmpeg).replace("ffmpeg.exe", "ffprobe.exe")
     try:
         r = subprocess.run(
-            [probe, "-v", "quiet", "-print_format", "json",
+            [str(probe), "-v", "quiet", "-print_format", "json",
              "-show_format", str(path)],
             capture_output=True, text=True, timeout=8,
             creationflags=CREATE_NO_WINDOW,
