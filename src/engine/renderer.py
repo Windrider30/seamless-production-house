@@ -260,8 +260,11 @@ def apply_text_overlay(
         textfile = tf.name
 
     try:
+        # Escape the textfile path the same way we escape fontfile:
+        # forward slashes everywhere, colon in Windows drive letter escaped.
+        escaped_textfile = textfile.replace("\\", "/").replace(":", "\\:")
         parts = [
-            f"textfile={textfile}",
+            f"textfile={escaped_textfile}",
             f"fontsize={font_size}",
             f"fontcolor={color}",
             "x=(w-text_w)/2",
@@ -278,7 +281,10 @@ def apply_text_overlay(
             parts.insert(1, f"fontfile={escaped}")
 
         drawtext = "drawtext=" + ":".join(parts)
-        cmd = [ffmpeg, "-y", "-i", str(src), "-vf", drawtext] + enc + [
+        cmd = [ffmpeg, "-y", "-i", str(src),
+               "-vf", drawtext,
+               "-pix_fmt", "yuv420p",   # required for NVENC after a sw filter
+               ] + enc + [
             "-c:a", "copy",
             str(dest),
         ]
@@ -432,10 +438,19 @@ class RenderJob:
                 # Force even dimensions for H.264 (chroma sub-sampling)
                 target_resolution = (fw // 2 * 2, fh // 2 * 2)
 
-        # Photo Slideshow: override clip_hold with user-selected duration
+        # Photo Slideshow: override clip_hold with user-selected duration,
+        # then guarantee each photo has at least 2 s of fully-visible body
+        # after the transition overlap regions are removed from both ends.
         hold_duration = float(self.content_cfg["clip_hold"])
         if self.slideshow_hold is not None:
             hold_duration = self.slideshow_hold
+
+        if self.content_cfg.get("force_resolution"):
+            xfade = float(self.genre_cfg["xfade_dur"])
+            if self.genre_cfg["transition"] != "cut":
+                min_hold = 2.0 * xfade + 2.0
+                if hold_duration < min_hold:
+                    hold_duration = min_hold
 
         converted: list[Path] = []
         for i, clip in enumerate(self.clips[self.start_clip:], start=self.start_clip):
