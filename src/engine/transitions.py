@@ -191,8 +191,16 @@ def crossfade_transition(clip_a: Path, clip_b: Path, output: Path,
         trim_stream_copy(clip_b, head_b, duration_sec=overlap)
 
         # xfade only these short clips (~1-2 seconds of encode work)
-        tail_dur = get_duration(tail_a)
-        offset   = max(0.0, tail_dur - duration)
+        tail_dur  = get_duration(tail_a)
+        head_dur  = get_duration(head_b)
+        offset    = max(0.0, tail_dur - duration)
+
+        # Clamp the crossfade duration to the shortest available input.
+        # If a clip is shorter than xfade_dur (e.g. a 2s clip with Ambient
+        # genre at xfade=3s), acrossfade=d=3 on a 2s clip causes FFmpeg to
+        # error out.  safe_dur ensures we never ask for more than each input
+        # can provide, while keeping at least a 0.1s transition.
+        safe_dur = max(0.1, min(duration, tail_dur, head_dur))
 
         # scale2ref scales head_b to match tail_a's dimensions before xfade.
         # xfade requires identical W×H on both inputs — this handles the case
@@ -200,8 +208,8 @@ def crossfade_transition(clip_a: Path, clip_b: Path, output: Path,
         filter_graph = (
             f"[1:v][0:v]scale2ref[vb][va];"
             f"[va][vb]xfade=transition=dissolve:"
-            f"duration={duration}:offset={offset}[v];"
-            f"[0:a][1:a]acrossfade=d={duration}[a]"
+            f"duration={safe_dur}:offset={offset}[v];"
+            f"[0:a][1:a]acrossfade=d={safe_dur}[a]"
         )
         _run([ffmpeg, "-y",
               "-i", str(tail_a), "-i", str(head_b),

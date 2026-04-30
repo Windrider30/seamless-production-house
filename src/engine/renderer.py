@@ -258,9 +258,17 @@ def apply_text_overlay(
     y_expr = y_map.get(position, "(h-text_h)/2")
 
     # Escape text for the drawtext text= option.
-    # Only : and \ need escaping; all other chars (spaces, apostrophes, etc.)
-    # are passed literally via subprocess (no shell involved).
-    escaped_text = text.replace("\\", "\\\\").replace(":", "\\:").replace("%", "%%")
+    # In FFmpeg's filter option string a single-quote starts a "quoted string"
+    # mode that suppresses the : separator — any unmatched ' causes a parse
+    # error.  Order matters: escape \ first so subsequent \-prefixes aren't
+    # doubled, then escape ' and :, then %% for drawtext's strftime formatter.
+    escaped_text = (
+        text
+        .replace("\\", "\\\\")
+        .replace("'",  "\\'")
+        .replace(":",  "\\:")
+        .replace("%",  "%%")
+    )
 
     # FFmpeg 8.1 broke both \: and single-quote quoting for Windows drive-letter
     # colons (C:) inside filter option values — the option parser splits on ALL
@@ -298,7 +306,17 @@ def apply_text_overlay(
         f"enable=between(t\\,{start_time:.2f}\\,{end_time:.2f})",
     ]
     if font_path and Path(font_path).exists():
-        parts.insert(1, f"fontfile={_nodrive(font_path)}")
+        # Copy font to the output's directory so it's on the same drive as the
+        # exe.  _nodrive strips the Windows drive letter (C:) from the path so
+        # FFmpeg's filter option parser doesn't choke on the colon — but the
+        # resulting /Windows/Fonts/... path is resolved relative to the CURRENT
+        # DRIVE.  If the app is installed on D: the system fonts are on C: and
+        # the path silently resolves wrong.  A local copy always lives on the
+        # same drive as the exe, so _nodrive always produces a correct path.
+        import shutil as _shutil
+        font_copy = dest.parent / ("_overlay_font" + Path(font_path).suffix)
+        _shutil.copy2(font_path, str(font_copy))
+        parts.insert(1, f"fontfile={_nodrive(str(font_copy))}")
 
     drawtext = "drawtext=" + ":".join(parts)
     cmd = [ffmpeg, "-y", "-i", str(src),
