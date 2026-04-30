@@ -228,6 +228,7 @@ def apply_text_overlay(
     position: str,
     text_duration: float,
     encoder: str,
+    start_time: float = 0.0,
 ) -> None:
     """
     Burn a text overlay into a clip using FFmpeg drawtext.
@@ -245,7 +246,9 @@ def apply_text_overlay(
               "-pix_fmt", "yuv420p"]
 
     clip_dur = get_duration(src)
-    vis_dur  = min(text_duration, max(0.5, clip_dur - 0.5))
+    # vis_dur: how long text is shown; capped so text ends before clip ends
+    vis_dur  = min(text_duration, max(0.5, clip_dur - start_time - 0.5))
+    end_time = start_time + vis_dur
 
     y_map = {
         "Top":    "h*0.08",
@@ -270,7 +273,7 @@ def apply_text_overlay(
             f"fontcolor={color}",
             "x=(w-text_w)/2",
             f"y={y_expr}",
-            f"enable='between(t,0,{vis_dur:.2f})'",
+            f"enable='between(t,{start_time:.2f},{end_time:.2f})'",
             # Dark box behind text for readability
             "box=1",
             "boxcolor=black@0.5",
@@ -489,6 +492,15 @@ class RenderJob:
         # ── Optional: Burn text into intro / outro ───────────────────────
         # Text applies whenever the user typed something — pin state is
         # independent (pin controls looping, not text visibility).
+        #
+        # start_time for outro: the outro clip's body is trimmed from
+        # xfade_dur onward (the left end is consumed by the transition from
+        # the previous clip).  If we burned the text at t=0 the transition
+        # trim would erase most of it.  Shift the text to start at xfade_dur
+        # so it sits squarely inside the visible body portion.
+        _xfade = float(self.genre_cfg["xfade_dur"])
+        _has_transitions = (self.genre_cfg["transition"] != "cut")
+
         if self.intro_text.strip() and len(converted) > 0:
             self._report(0.26, "Applying intro text overlay…")
             text_path = self.temp_dir / "text_intro.mp4"
@@ -502,14 +514,18 @@ class RenderJob:
                     position=self.text_position,
                     text_duration=self.text_duration,
                     encoder=self.encoder,
+                    start_time=0.0,
                 )
                 converted[0] = text_path
             except Exception as exc:
                 log_error(exc, "intro text overlay")
+                self._report(0.26, f"Intro text warning: {str(exc)[:120]}")
 
         if self.outro_text.strip() and len(converted) > 1:
             self._report(0.27, "Applying outro text overlay…")
             text_path = self.temp_dir / "text_outro.mp4"
+            # Outro body starts at xfade_dur (left side eaten by transition)
+            outro_start = _xfade if _has_transitions else 0.0
             try:
                 apply_text_overlay(
                     converted[-1], text_path,
@@ -520,10 +536,12 @@ class RenderJob:
                     position=self.text_position,
                     text_duration=self.text_duration,
                     encoder=self.encoder,
+                    start_time=outro_start,
                 )
                 converted[-1] = text_path
             except Exception as exc:
                 log_error(exc, "outro text overlay")
+                self._report(0.27, f"Outro text warning: {str(exc)[:120]}")
 
         # ── Optional: Loop clips to fill music duration ──────────────────
         if self.loop_clips and self.music_files and len(converted) > 0:
@@ -545,12 +563,30 @@ class RenderJob:
             head_dur   = sum(get_duration(c) for c in head)
             tail_dur   = sum(get_duration(c) for c in tail)
             middle_dur = sum(get_duration(c) for c in middle)
+            n_middle   = len(middle)
 
-            if middle_dur > 0:
-                remaining = music_dur - head_dur - tail_dur
-                if remaining > middle_dur:
-                    repeats = math.ceil(remaining / middle_dur)
-                    self._report(0.25, f"Looping {len(middle)} clips ×{repeats} to fill {music_dur:.0f}s of music…")
+            if middle_dur > 0 and n_middle > 0:
+                # Use the RENDERED duration for the repeat calculation, not the
+                # raw clip duration. With xfade transitions, each clip-to-clip
+                # junction removes xfade_dur from the output.  Using raw
+                # durations causes far too few repeats and a video that ends
+                # well before the music does.
+                #
+                # Formula (derived from total_rendered = Σdurs - (n-1)*xfade):
+                #   repeats = ceil(
+                #       (music_dur - head_dur - tail_dur + xfade) /
+                #       (middle_dur - n_middle * xfade)
+                #   )
+                # For "cut" transitions xfade=0 this reduces to the old formula.
+                xfade_dur = float(self.genre_cfg["xfade_dur"])
+                eff_denom = middle_dur - n_middle * xfade_dur
+                if eff_denom <= 0:
+                    eff_denom = middle_dur   # safety: clips shorter than xfade
+                eff_numer = music_dur - head_dur - tail_dur + xfade_dur
+                repeats = math.ceil(eff_numer / eff_denom)
+                repeats = max(1, repeats)
+                if repeats > 1:
+                    self._report(0.25, f"Looping {n_middle} clips ×{repeats} to fill {music_dur:.0f}s of music…")
                     middle = middle * repeats
             converted = head + middle + tail
 
