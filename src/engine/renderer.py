@@ -520,7 +520,7 @@ class RenderJob:
                 converted[0] = text_path
             except Exception as exc:
                 log_error(exc, "intro text overlay")
-                self._report(0.26, f"Intro text warning: {str(exc)[:120]}")
+                self._report(0.26, f"Intro text failed — check log")
 
         if self.outro_text.strip() and len(converted) > 1:
             self._report(0.27, "Applying outro text overlay…")
@@ -542,7 +542,7 @@ class RenderJob:
                 converted[-1] = text_path
             except Exception as exc:
                 log_error(exc, "outro text overlay")
-                self._report(0.27, f"Outro text warning: {str(exc)[:120]}")
+                self._report(0.27, f"Outro text failed — check log")
 
         # ── Optional: Loop clips to fill music duration ──────────────────
         if self.loop_clips and self.music_files and len(converted) > 0:

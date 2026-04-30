@@ -24,6 +24,7 @@ class ProgressPanel(ctk.CTkFrame):
             self, text="Idle — waiting to start",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=C["text"], anchor="w",
+            wraplength=260, justify="left",
         )
         self._action_lbl.pack(fill="x", padx=14, pady=(0, 6))
 
