@@ -11,7 +11,7 @@ from pathlib import Path
 import customtkinter as ctk
 
 from src.config import C, APP_NAME, APP_VERSION, TEMP_DIR
-from src.engine.hardware import detect_encoder, gpu_warning
+from src.engine.hardware import detect_encoder
 from src.engine.renderer import RenderJob
 from src.gui.dialogs.missing_engine import MissingEngineDialog
 from src.gui.dialogs.resume_dialog import ResumeDialog
@@ -237,14 +237,9 @@ class App(_Base):
         self._after_engines_ready()
 
     def _after_engines_ready(self) -> None:
-        # 2. Detect GPU
-        enc = detect_encoder()
-        warn = gpu_warning()
-        if warn:
-            self._gpu_lbl.configure(text="⚠ CPU Mode", text_color=C["warning"])
-            self._show_toast(warn, color=C["warning"])
-        else:
-            self._gpu_lbl.configure(text=f"GPU: {enc}", text_color=C["success"])
+        # 2. Show encoder (always CPU)
+        detect_encoder()  # warm the import
+        self._gpu_lbl.configure(text="Encoder: CPU (libx264)", text_color=C["success"])
 
         # 3. Resume session?
         if session_store.has_resumable():
