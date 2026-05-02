@@ -12,6 +12,7 @@ from src.config import (
     CONTENT_TYPE_NAMES, CONTENT_TYPES,
     RESOLUTION_OPTIONS, FPS_OPTIONS,
     SLIDESHOW_RESOLUTIONS, TEXT_COLORS, TEXT_POSITIONS,
+    TRANSITION_STYLES,
     available_fonts,
 )
 
@@ -280,6 +281,58 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         self._text_dur_slider.set(3.0)
         self._text_dur_slider.pack(fill="x", padx=12, pady=(0, 10))
 
+        # ── Section: Transitions ─────────────────────────────────────────
+        self._section("TRANSITIONS")
+
+        ctk.CTkLabel(
+            self, text='Override the genre\'s default transition. "Auto" uses the genre setting.',
+            font=ctk.CTkFont(size=10), text_color=C["muted"],
+            wraplength=220, justify="left", anchor="w",
+        ).pack(fill="x", padx=12, pady=(0, 6))
+
+        _label(self, "Transition Style").pack(fill="x", padx=12, pady=(0, 2))
+        self._trans_style_var = ctk.StringVar(value="Auto (genre default)")
+        ctk.CTkComboBox(
+            self, values=list(TRANSITION_STYLES.keys()),
+            variable=self._trans_style_var,
+            fg_color=C["card"], button_color=C["emerald"],
+            border_color=C["border"], dropdown_fg_color=C["card2"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+        ).pack(fill="x", **pad)
+
+        # Duration override
+        tdur_row = ctk.CTkFrame(self, fg_color="transparent")
+        tdur_row.pack(fill="x", padx=12, pady=(0, 2))
+        _label(tdur_row, "Transition Duration").pack(side="left")
+
+        self._trans_auto_var = ctk.BooleanVar(value=True)
+        self._trans_auto_chk = ctk.CTkCheckBox(
+            tdur_row, text="Auto",
+            variable=self._trans_auto_var,
+            fg_color=C["emerald"], hover_color=C["emerald_dk"],
+            border_color=C["border"],
+            text_color=C["text2"], font=ctk.CTkFont(size=10),
+            width=60,
+            command=self._on_trans_auto_toggle,
+        )
+        self._trans_auto_chk.pack(side="right")
+
+        self._trans_dur_lbl = ctk.CTkLabel(
+            self, text="1.5 s",
+            font=ctk.CTkFont(size=11), text_color=C["muted"], anchor="e",
+        )
+        self._trans_dur_lbl.pack(fill="x", padx=12, pady=(0, 2))
+
+        self._trans_dur_slider = ctk.CTkSlider(
+            self, from_=0.2, to=4.0, number_of_steps=76,
+            button_color=C["emerald"], button_hover_color=C["emerald_lt"],
+            progress_color=C["emerald_dk"], fg_color=C["card"],
+            state="disabled",
+            command=self._on_trans_dur_slide,
+        )
+        self._trans_dur_slider.set(1.5)
+        self._trans_dur_slider.pack(fill="x", padx=12, pady=(0, 10))
+
         # ── Section: Photo Slideshow ──────────────────────────────────────
         self._section("PHOTO SLIDESHOW")
 
@@ -388,6 +441,17 @@ class SettingsPanel(ctk.CTkScrollableFrame):
             self._font_dd.configure(values=names)
             self._font_var.set(name)
 
+    def _on_trans_auto_toggle(self) -> None:
+        if self._trans_auto_var.get():
+            self._trans_dur_slider.configure(state="disabled")
+            self._trans_dur_lbl.configure(text_color=C["muted"])
+        else:
+            self._trans_dur_slider.configure(state="normal")
+            self._trans_dur_lbl.configure(text_color=C["emerald"])
+
+    def _on_trans_dur_slide(self, v: float) -> None:
+        self._trans_dur_lbl.configure(text=f"{v:.1f} s")
+
     def _on_genre_change(self, value: str) -> None:
         cfg = GENRES.get(value, {})
         self._genre_desc.configure(text=cfg.get("desc", ""))
@@ -484,3 +548,14 @@ class SettingsPanel(ctk.CTkScrollableFrame):
     @property
     def slideshow_hold(self) -> float:
         return round(self._slide_hold_slider.get(), 1)
+
+    @property
+    def transition_style(self) -> str:
+        return self._trans_style_var.get()
+
+    @property
+    def transition_duration(self) -> float:
+        """Returns 0.0 when Auto is checked (renderer uses genre default)."""
+        if self._trans_auto_var.get():
+            return 0.0
+        return round(self._trans_dur_slider.get(), 2)

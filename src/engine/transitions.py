@@ -163,6 +163,7 @@ def scene_similarity(clip_a: Path, clip_b: Path) -> float:
 
 def crossfade_transition(clip_a: Path, clip_b: Path, output: Path,
                          duration: float = CROSSFADE_DURATION,
+                         transition_type: str = "dissolve",
                          encoder: str | None = None) -> None:
     """
     Fast crossfade: only extracts the short overlap region from each clip,
@@ -211,9 +212,10 @@ def crossfade_transition(clip_a: Path, clip_b: Path, output: Path,
         # scale2ref scales head_b to match tail_a's dimensions before xfade.
         # xfade requires identical W×H on both inputs — this handles the case
         # where clips have different resolutions (e.g. portrait video + landscape photo).
+        xfade_name = transition_type if transition_type else "dissolve"
         filter_graph = (
             f"[1:v][0:v]scale2ref[vb][va];"
-            f"[va][vb]xfade=transition=dissolve:"
+            f"[va][vb]xfade=transition={xfade_name}:"
             f"duration={safe_dur}:offset={offset}[v];"
             f"[0:a][1:a]acrossfade=d={safe_dur}[a]"
         )
@@ -229,6 +231,7 @@ def crossfade_transition(clip_a: Path, clip_b: Path, output: Path,
 def morph_transition(clip_a: Path, clip_b: Path, output: Path,
                      fps: float = 30.0, num_frames: int = 8,
                      duration: float = CROSSFADE_DURATION,
+                     transition_type: str = "dissolve",
                      encoder: str | None = None) -> None:
     """
     RIFE motion-morph between last frame of A and first frame of B.
@@ -278,7 +281,9 @@ def morph_transition(clip_a: Path, clip_b: Path, output: Path,
     if not rife_ok:
         # RIFE failed (no Vulkan support, driver too old, etc.) — use crossfade
         crossfade_transition(clip_a, clip_b, output,
-                             duration=duration, encoder=encoder)
+                             duration=duration,
+                             transition_type=transition_type,
+                             encoder=encoder)
 
 
 def concat_clips(clips: list[Path], output: Path) -> None:

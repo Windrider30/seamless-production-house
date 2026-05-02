@@ -12,9 +12,12 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+import textwrap as _textwrap
+
 from src.config import (
     GENRES, CONTENT_TYPES, SEGMENT_DURATION,
     L_CUT_SECONDS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS, TEMP_DIR,
+    TRANSITION_STYLES,
 )
 from src.engine.hardware import detect_encoder, encoder_flags
 from src.engine.transitions import (
@@ -222,6 +225,37 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
     _run_ffmpeg(cmd, progress_cb, base_fraction, fraction_range, total_frames)
 
 
+def _get_clip_width(clip: Path) -> int:
+    """Return the video stream width in pixels, or 1920 as a safe default."""
+    ffprobe = get_ffprobe()
+    if not ffprobe:
+        return 1920
+    import json as _j
+    try:
+        r = subprocess.run(
+            [str(ffprobe), "-v", "quiet", "-print_format", "json",
+             "-show_streams", "-select_streams", "v:0", str(clip)],
+            capture_output=True, text=True, timeout=8,
+            creationflags=CREATE_NO_WINDOW,
+        )
+        streams = _j.loads(r.stdout).get("streams", [])
+        return int(streams[0].get("width", 1920)) if streams else 1920
+    except Exception:
+        return 1920
+
+
+def _wrap_for_drawtext(escaped_text: str, font_size: int, video_w: int) -> str:
+    """
+    Word-wrap pre-escaped drawtext text so it fits inside video_w pixels.
+    Returns text with drawtext literal newlines (\\n = backslash + n).
+    Proportional fonts average roughly 0.55× font_size per character.
+    """
+    chars_per_line = max(8, int(video_w / (font_size * 0.55)))
+    lines = _textwrap.wrap(escaped_text, width=chars_per_line,
+                           break_long_words=True, break_on_hyphens=False)
+    return "\\n".join(lines) if lines else escaped_text
+
+
 def apply_text_overlay(
     src: Path,
     dest: Path,
@@ -273,6 +307,12 @@ def apply_text_overlay(
         .replace(":",  "\\:")
         .replace("%",  "%%")
     )
+
+    # Auto word-wrap: split the text into multiple lines so it never overflows
+    # the frame.  We do this on the already-escaped text so the wrap width
+    # calculation uses the same characters that will appear on screen.
+    video_w = _get_clip_width(src)
+    escaped_text = _wrap_for_drawtext(escaped_text, font_size, video_w)
 
     # FFmpeg 8.1 broke both \: and single-quote quoting for Windows drive-letter
     # colons (C:) inside filter option values — the option parser splits on ALL
@@ -378,6 +418,8 @@ class RenderJob:
         text_duration: float = 3.0,
         slideshow_resolution: tuple[int, int] | None = None,
         slideshow_hold: float | None = None,
+        transition_style: str = "Auto (genre default)",
+        transition_duration: float = 0.0,
     ):
         self.clips = clips
         self.music_files = music_files
@@ -401,6 +443,8 @@ class RenderJob:
         self.text_duration = text_duration
         self.slideshow_resolution = slideshow_resolution
         self.slideshow_hold = slideshow_hold
+        self.transition_style = transition_style or "Auto (genre default)"
+        self.transition_duration = transition_duration  # 0.0 means "use genre default"
         self.cancelled = False
         self.temp_dir = TEMP_DIR / "render"
         # Clear stale temp files unless resuming a previous session
@@ -441,11 +485,19 @@ class RenderJob:
         })
 
     def _choose_transition(self, clip_a: Path, clip_b: Path) -> str:
+        # User override trumps genre setting
+        style_mode, _ = TRANSITION_STYLES.get(
+            self.transition_style, (None, None)
+        )
+        if style_mode is not None:
+            return style_mode  # "crossfade", "morph", or "cut"
+
+        # Genre default with scene-similarity morph gate
         preferred = self.genre_cfg["transition"]
         if preferred == "morph":
             sim = scene_similarity(clip_a, clip_b)
             if sim < self.genre_cfg["scene_thresh"]:
-                return "crossfade"   # scenes too different → fallback
+                return "crossfade"
         return preferred
 
     # ── Main run ─────────────────────────────────────────────────────────────
@@ -609,11 +661,17 @@ class RenderJob:
                 #       (middle_dur - n_middle * xfade)
                 #   )
                 # For "cut" transitions xfade=0 this reduces to the old formula.
-                xfade_dur = float(self.genre_cfg["xfade_dur"])
-                eff_denom = middle_dur - n_middle * xfade_dur
+                # Use the user-overridden xfade_dur if set; else genre default.
+                loop_xfade = (
+                    float(self.transition_duration)
+                    if self.transition_duration > 0
+                    else float(self.genre_cfg["xfade_dur"])
+                )
+                xfade_dur_loop = loop_xfade
+                eff_denom = middle_dur - n_middle * xfade_dur_loop
                 if eff_denom <= 0:
                     eff_denom = middle_dur   # safety: clips shorter than xfade
-                eff_numer = music_dur - head_dur - tail_dur + xfade_dur
+                eff_numer = music_dur - head_dur - tail_dur + xfade_dur_loop
                 repeats = math.ceil(eff_numer / eff_denom)
                 repeats = max(1, repeats)
                 if repeats > 1:
@@ -631,8 +689,19 @@ class RenderJob:
         #
         # Final order: body_0, trans_01, body_1, trans_12, …, body_N
         #
-        trans_type = self.genre_cfg["transition"]
-        xfade_dur  = float(self.genre_cfg["xfade_dur"])
+        # Resolve effective transition mode and speed from user overrides.
+        _style_mode, _style_xfade = TRANSITION_STYLES.get(
+            self.transition_style, (None, None)
+        )
+        trans_type = _style_mode if _style_mode is not None else self.genre_cfg["transition"]
+        xfade_dur  = (
+            float(self.transition_duration)
+            if self.transition_duration > 0
+            else float(self.genre_cfg["xfade_dur"])
+        )
+        # The specific FFmpeg xfade filter name (e.g. "wipeleft"); falls back
+        # to "dissolve" when the style is auto/morph/cut.
+        xfade_type = _style_xfade if _style_xfade else "dissolve"
         concat_parts: list[Path] = []
         segment_parts: list[Path] = []
         segment_dur = 0.0
@@ -686,11 +755,13 @@ class RenderJob:
                         morph_transition(clip, next_clip, trans_path,
                                          fps=float(self.fps or 30),
                                          duration=xfade_dur,
+                                         transition_type=xfade_type,
                                          encoder=self.encoder)
                     elif actual_type == "crossfade":
                         self._report(fraction, f"Cross-fading clip {i+1} → {i+2} of {n_converted}…")
                         crossfade_transition(clip, next_clip, trans_path,
                                              duration=xfade_dur,
+                                             transition_type=xfade_type,
                                              encoder=self.encoder)
                     # "cut" — no transition file, bodies already adjacent
                 except Exception as exc:

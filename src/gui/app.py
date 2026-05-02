@@ -16,6 +16,7 @@ from src.engine.renderer import RenderJob
 from src.gui.dialogs.missing_engine import MissingEngineDialog
 from src.gui.dialogs.resume_dialog import ResumeDialog
 from src.gui.panels.drop_panel import DropPanel
+from src.gui.panels.music_panel import MusicPlaylistPanel
 from src.gui.panels.queue_panel import QueuePanel
 from src.gui.panels.settings_panel import SettingsPanel
 from src.gui.panels.progress_panel import ProgressPanel
@@ -137,7 +138,7 @@ class App(_Base):
     def _build_left(self, parent) -> None:
         col = ctk.CTkFrame(parent, fg_color="transparent")
         col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        col.rowconfigure(1, weight=1)
+        col.rowconfigure(2, weight=1)   # queue fills remaining space
         col.columnconfigure(0, weight=1)
 
         # Drop zones
@@ -148,9 +149,16 @@ class App(_Base):
         )
         self._drop_panel.grid(row=0, column=0, sticky="ew", pady=(8, 8))
 
+        # Music playlist (hidden until music is loaded)
+        self._music_panel = MusicPlaylistPanel(
+            col, on_remove=self._on_music_remove,
+        )
+        self._music_panel.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        self._music_panel.grid_remove()
+
         # Clip queue
         self._queue = QueuePanel(col)
-        self._queue.grid(row=1, column=0, sticky="nsew")
+        self._queue.grid(row=2, column=0, sticky="nsew")
 
     def _build_right(self, parent) -> None:
         col = ctk.CTkFrame(parent, fg_color="transparent")
@@ -264,19 +272,31 @@ class App(_Base):
 
     # ── Drop handlers ────────────────────────────────────────────────────────
     def _on_clips_dropped(self, clips: list[Path]) -> None:
-        self._clips = clips
-        self._queue.set_clips(clips)
-        # Wire up queue clicks to preview
-        log_info(f"Loaded {len(clips)} clips.")
+        # Accumulate: adding more clips merges with existing list
+        combined = list(dict.fromkeys(self._clips + clips))
+        self._clips = combined
+        self._queue.set_clips(self._clips)
+        self._drop_panel.clips_zone._set_count(len(self._clips))
+        log_info(f"Added {len(clips)} clip(s). Total: {len(self._clips)}")
 
     def _on_music_dropped(self, music: list[Path]) -> None:
-        # Accumulate: add new tracks to the existing playlist so the user
-        # can build a multi-song playlist by loading files one at a time.
-        combined = list(dict.fromkeys(self._music + music))  # preserve order, deduplicate
+        # Accumulate: add new tracks, deduplicate, preserve order
+        combined = list(dict.fromkeys(self._music + music))
         self._music = combined
-        # Update the drop zone label to show the running total
         self._drop_panel.music_zone._set_count(len(self._music))
+        self._music_panel.set_tracks(self._music)
+        self._music_panel.grid()   # show the playlist panel
         log_info(f"Added {len(music)} music track(s). Playlist total: {len(self._music)}")
+
+    def _on_music_remove(self, idx: int) -> None:
+        if 0 <= idx < len(self._music):
+            removed = self._music.pop(idx)
+            log_info(f"Removed music track: {removed.name}. Remaining: {len(self._music)}")
+        self._drop_panel.music_zone._set_count(len(self._music))
+        self._music_panel.set_tracks(self._music)
+        if not self._music:
+            self._music_panel.grid_remove()
+            self._drop_panel.music_zone.reset()
 
     # ── Pre-flight ────────────────────────────────────────────────────────────
     def _run_preflight(self) -> None:
@@ -363,6 +383,8 @@ class App(_Base):
             text_duration=self._settings.text_duration,
             slideshow_resolution=self._settings.slideshow_resolution,
             slideshow_hold=self._settings.slideshow_hold,
+            transition_style=self._settings.transition_style,
+            transition_duration=self._settings.transition_duration,
         )
         threading.Thread(target=self._render_job.run, daemon=True).start()
 

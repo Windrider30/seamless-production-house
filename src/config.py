@@ -218,6 +218,28 @@ TEXT_COLORS: dict[str, str] = {
 
 TEXT_POSITIONS: list[str] = ["Center", "Top", "Bottom"]
 
+# ── Transition style overrides ────────────────────────────────────────────────
+# Maps the UI display label to (transition_mode, ffmpeg_xfade_type).
+# transition_mode: "crossfade" | "cut" | "morph" | None (= auto from genre)
+# ffmpeg_xfade_type: any FFmpeg xfade transition name, or None
+TRANSITION_STYLES: dict[str, tuple[str | None, str | None]] = {
+    "Auto (genre default)":  (None,         None),
+    "Crossfade / Dissolve":  ("crossfade",  "dissolve"),
+    "Fade to Black":         ("crossfade",  "fadeblack"),
+    "Fade to White":         ("crossfade",  "fadewhite"),
+    "Wipe Left":             ("crossfade",  "wipeleft"),
+    "Wipe Right":            ("crossfade",  "wiperight"),
+    "Wipe Up":               ("crossfade",  "wipeup"),
+    "Wipe Down":             ("crossfade",  "wipedown"),
+    "Slide Left":            ("crossfade",  "slideleft"),
+    "Slide Right":           ("crossfade",  "slideright"),
+    "Zoom In":               ("crossfade",  "zoomin"),
+    "Pixelize":              ("crossfade",  "pixelize"),
+    "Radial":                ("crossfade",  "radial"),
+    "Morph (AI)":            ("morph",      None),
+    "Hard Cut":              ("cut",        None),
+}
+
 # System fonts — checked by path on each platform; first existing path wins.
 SYSTEM_FONTS: dict[str, dict[str, list[str]]] = {
     "Arial": {
