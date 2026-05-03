@@ -12,7 +12,7 @@ from src.config import (
     CONTENT_TYPE_NAMES, CONTENT_TYPES,
     RESOLUTION_OPTIONS, FPS_OPTIONS,
     SLIDESHOW_RESOLUTIONS, TEXT_COLORS, TEXT_POSITIONS,
-    TRANSITION_STYLES,
+    TRANSITION_STYLES, OUTPUT_PRESETS, WATERMARK_POSITIONS,
     available_fonts,
 )
 
@@ -333,6 +333,105 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         self._trans_dur_slider.set(1.5)
         self._trans_dur_slider.pack(fill="x", padx=12, pady=(0, 10))
 
+        # ── Section: Effects ─────────────────────────────────────────────
+        self._section("EFFECTS")
+
+        self._ken_burns_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            self, text="Ken Burns  (photos only)",
+            variable=self._ken_burns_var,
+            fg_color=C["emerald"], hover_color=C["emerald_dk"],
+            border_color=C["border"],
+            text_color=C["text2"],
+            font=ctk.CTkFont(size=11),
+        ).pack(anchor="w", padx=12, pady=(0, 2))
+        ctk.CTkLabel(
+            self, text="Slow zoom / pan on still images — cycles 4 styles",
+            font=ctk.CTkFont(size=10), text_color=C["muted"], anchor="w",
+        ).pack(fill="x", padx=30, pady=(0, 10))
+
+        # ── Section: Watermark ───────────────────────────────────────────
+        self._section("WATERMARK")
+
+        self._wm_enable_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            self, text="Enable Watermark / Logo",
+            variable=self._wm_enable_var,
+            fg_color=C["emerald"], hover_color=C["emerald_dk"],
+            border_color=C["border"],
+            text_color=C["text2"],
+            font=ctk.CTkFont(size=11),
+            command=self._on_wm_toggle,
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        # File row
+        self._wm_path: str = ""
+        wm_file_row = ctk.CTkFrame(self, fg_color="transparent")
+        wm_file_row.pack(fill="x", padx=12, pady=(0, 6))
+        self._wm_lbl = ctk.CTkLabel(
+            wm_file_row, text="No file selected",
+            font=ctk.CTkFont(size=10), text_color=C["muted"],
+            anchor="w",
+        )
+        self._wm_lbl.pack(side="left", expand=True, fill="x")
+        self._wm_browse_btn = ctk.CTkButton(
+            wm_file_row, text="Browse…", width=72, height=26,
+            fg_color=C["card2"], text_color=C["text"],
+            hover_color=C["border"],
+            font=ctk.CTkFont(size=11),
+            command=self._browse_watermark,
+            state="disabled",
+        )
+        self._wm_browse_btn.pack(side="right")
+
+        _label(self, "Position").pack(fill="x", padx=12, pady=(0, 2))
+        self._wm_pos_var = ctk.StringVar(value=WATERMARK_POSITIONS[0])
+        self._wm_pos_dd = ctk.CTkComboBox(
+            self, values=WATERMARK_POSITIONS,
+            variable=self._wm_pos_var,
+            fg_color=C["card"], button_color=C["emerald"],
+            border_color=C["border"], dropdown_fg_color=C["card2"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+            state="disabled",
+        )
+        self._wm_pos_dd.pack(fill="x", **pad)
+
+        op_row = ctk.CTkFrame(self, fg_color="transparent")
+        op_row.pack(fill="x", padx=12, pady=(0, 2))
+        _label(op_row, "Opacity").pack(side="left")
+        self._wm_op_lbl = ctk.CTkLabel(
+            op_row, text="80%",
+            font=ctk.CTkFont(size=11), text_color=C["muted"], width=36,
+        )
+        self._wm_op_lbl.pack(side="right")
+        self._wm_op_slider = ctk.CTkSlider(
+            self, from_=10, to=100, number_of_steps=90,
+            button_color=C["emerald"], button_hover_color=C["emerald_lt"],
+            progress_color=C["emerald_dk"], fg_color=C["card"],
+            state="disabled",
+            command=lambda v: self._wm_op_lbl.configure(text=f"{int(v)}%"),
+        )
+        self._wm_op_slider.set(80)
+        self._wm_op_slider.pack(fill="x", padx=12, pady=(0, 4))
+
+        sz_row = ctk.CTkFrame(self, fg_color="transparent")
+        sz_row.pack(fill="x", padx=12, pady=(0, 2))
+        _label(sz_row, "Size  (% of video width)").pack(side="left")
+        self._wm_sz_lbl = ctk.CTkLabel(
+            sz_row, text="15%",
+            font=ctk.CTkFont(size=11), text_color=C["muted"], width=36,
+        )
+        self._wm_sz_lbl.pack(side="right")
+        self._wm_sz_slider = ctk.CTkSlider(
+            self, from_=5, to=40, number_of_steps=35,
+            button_color=C["emerald"], button_hover_color=C["emerald_lt"],
+            progress_color=C["emerald_dk"], fg_color=C["card"],
+            state="disabled",
+            command=lambda v: self._wm_sz_lbl.configure(text=f"{int(v)}%"),
+        )
+        self._wm_sz_slider.set(15)
+        self._wm_sz_slider.pack(fill="x", padx=12, pady=(0, 10))
+
         # ── Section: Photo Slideshow ──────────────────────────────────────
         self._section("PHOTO SLIDESHOW")
 
@@ -375,10 +474,22 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         # ── Section: Format ──────────────────────────────────────────────
         self._section("FORMAT")
 
+        _label(self, "Preset").pack(fill="x", padx=12, pady=(0, 2))
+        preset_keys = list(OUTPUT_PRESETS.keys())
+        self._preset_var = ctk.StringVar(value=preset_keys[0])
+        ctk.CTkComboBox(
+            self, values=preset_keys,
+            variable=self._preset_var,
+            fg_color=C["card"], button_color=C["emerald"],
+            border_color=C["border"], dropdown_fg_color=C["card2"],
+            text_color=C["text"], font=ctk.CTkFont(size=12),
+            command=self._on_preset_change,
+        ).pack(fill="x", **pad)
+
         _label(self, "Resolution").pack(fill="x", padx=12, pady=(0, 2))
         res_keys = list(RESOLUTION_OPTIONS.keys())
         self._res_var = ctk.StringVar(value=res_keys[0])
-        ctk.CTkComboBox(
+        self._res_dd = ctk.CTkComboBox(
             self, values=res_keys,
             variable=self._res_var,
             fg_color=C["card"], button_color=C["emerald"],
@@ -386,12 +497,14 @@ class SettingsPanel(ctk.CTkScrollableFrame):
             dropdown_fg_color=C["card2"],
             text_color=C["text"],
             font=ctk.CTkFont(size=12),
-        ).pack(fill="x", **pad)
+            command=lambda _: self._preset_var.set("Custom"),
+        )
+        self._res_dd.pack(fill="x", **pad)
 
         _label(self, "Frame Rate").pack(fill="x", padx=12, pady=(0, 2))
         fps_keys = list(FPS_OPTIONS.keys())
         self._fps_var = ctk.StringVar(value=fps_keys[0])
-        ctk.CTkComboBox(
+        self._fps_dd = ctk.CTkComboBox(
             self, values=fps_keys,
             variable=self._fps_var,
             fg_color=C["card"], button_color=C["emerald"],
@@ -399,7 +512,9 @@ class SettingsPanel(ctk.CTkScrollableFrame):
             dropdown_fg_color=C["card2"],
             text_color=C["text"],
             font=ctk.CTkFont(size=12),
-        ).pack(fill="x", **pad)
+            command=lambda _: self._preset_var.set("Custom"),
+        )
+        self._fps_dd.pack(fill="x", **pad)
 
     def _section(self, title: str) -> None:
         ctk.CTkLabel(
@@ -451,6 +566,38 @@ class SettingsPanel(ctk.CTkScrollableFrame):
 
     def _on_trans_dur_slide(self, v: float) -> None:
         self._trans_dur_lbl.configure(text=f"{v:.1f} s")
+
+    def _on_wm_toggle(self) -> None:
+        state = "normal" if self._wm_enable_var.get() else "disabled"
+        color = C["emerald"] if self._wm_enable_var.get() else C["muted"]
+        self._wm_browse_btn.configure(state=state)
+        self._wm_pos_dd.configure(state=state)
+        self._wm_op_slider.configure(state=state)
+        self._wm_sz_slider.configure(state=state)
+        self._wm_op_lbl.configure(text_color=color)
+        self._wm_sz_lbl.configure(text_color=color)
+
+    def _browse_watermark(self) -> None:
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Select Watermark / Logo",
+            filetypes=[("PNG image", "*.png"), ("All files", "*.*")],
+        )
+        if path:
+            self._wm_path = path
+            from pathlib import Path as _P
+            self._wm_lbl.configure(
+                text=_P(path).name, text_color=C["text2"],
+            )
+
+    def _on_preset_change(self, value: str) -> None:
+        preset = OUTPUT_PRESETS.get(value, {})
+        if not preset:
+            return
+        if "res" in preset:
+            self._res_var.set(preset["res"])
+        if "fps" in preset:
+            self._fps_var.set(preset["fps"])
 
     def _on_genre_change(self, value: str) -> None:
         cfg = GENRES.get(value, {})
@@ -559,3 +706,23 @@ class SettingsPanel(ctk.CTkScrollableFrame):
         if self._trans_auto_var.get():
             return 0.0
         return round(self._trans_dur_slider.get(), 2)
+
+    @property
+    def ken_burns(self) -> bool:
+        return self._ken_burns_var.get()
+
+    @property
+    def watermark_path(self) -> str:
+        return self._wm_path if self._wm_enable_var.get() else ""
+
+    @property
+    def watermark_position(self) -> str:
+        return self._wm_pos_var.get()
+
+    @property
+    def watermark_opacity(self) -> float:
+        return round(self._wm_op_slider.get() / 100, 2)
+
+    @property
+    def watermark_size_pct(self) -> int:
+        return int(self._wm_sz_slider.get())

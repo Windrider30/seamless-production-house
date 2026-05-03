@@ -17,7 +17,7 @@ import textwrap as _textwrap
 from src.config import (
     GENRES, CONTENT_TYPES, SEGMENT_DURATION,
     L_CUT_SECONDS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS, TEMP_DIR,
-    TRANSITION_STYLES,
+    TRANSITION_STYLES, TITLE_CARDS_DIR,
 )
 from src.engine.hardware import detect_encoder, encoder_flags
 from src.engine.transitions import (
@@ -135,12 +135,75 @@ def _probe_streams(src: Path) -> tuple[bool, int, int]:
         return False, 0, 0
 
 
+def _render_title_card(
+    spec: Path, dest: Path, encoder: str,
+    target_resolution: tuple[int, int] | None = None,
+    hold_duration: float = 5.0,
+    progress_cb: ProgressCB | None = None,
+    base_fraction: float = 0.0,
+    fraction_range: float = 0.0,
+) -> None:
+    """Generate a solid-colour clip with centred text from a .titlecard JSON spec."""
+    import json as _json
+    data = _json.loads(spec.read_text(encoding="utf-8"))
+    text      = data.get("text", "Title Card")
+    bg_hex    = data.get("bg_color", "0x000000")
+    txt_color = data.get("text_color", "white")
+    font_size = int(data.get("font_size", 80))
+    duration  = float(data.get("duration", hold_duration))
+    if target_resolution:
+        tw, th = target_resolution
+    else:
+        tw = int(data.get("width",  1920))
+        th = int(data.get("height", 1080))
+
+    ffmpeg = str(get_ffmpeg())
+    enc    = encoder_flags(encoder)
+
+    lines   = _wrap_lines(text, font_size, tw)
+    n_lines = len(lines)
+    line_h  = font_size + 40
+    total_h = n_lines * line_h
+
+    dt_parts: list[str] = []
+    for idx, line in enumerate(lines):
+        esc = (line.replace("\\", "\\\\")
+                   .replace("'",  "\\'")
+                   .replace(":",  "\\:")
+                   .replace("%",  "%%"))
+        y_expr = f"(h-{total_h})/2+{idx * line_h}"
+        dt_parts.append(
+            f"drawtext=text={esc}:fontsize={font_size}"
+            f":fontcolor={txt_color}:x=(w-text_w)/2:y={y_expr}"
+            f":shadowcolor=0x000000CC:shadowx=2:shadowy=2"
+        )
+
+    vf  = "setsar=1,format=yuv420p,fps=30," + ",".join(dt_parts)
+    cmd = [
+        ffmpeg, "-y",
+        "-f", "lavfi", "-i", f"color=c={bg_hex}:s={tw}x{th}:r=30",
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-vf", vf,
+    ] + enc + [
+        "-t", f"{duration:.3f}",
+        "-g", "90", "-bf", "0",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart", "-shortest",
+        str(dest),
+    ]
+    _run_ffmpeg(cmd, progress_cb, base_fraction, fraction_range,
+                int(duration * 30))
+
+
 def preconvert_clip(src: Path, dest: Path, encoder: str,
                     progress_cb: ProgressCB | None = None,
                     base_fraction: float = 0.0,
                     fraction_range: float = 0.0,
                     hold_duration: float = 5.0,
-                    target_resolution: tuple[int, int] | None = None) -> None:
+                    target_resolution: tuple[int, int] | None = None,
+                    ken_burns: bool = False,
+                    ken_burns_style: int = 0) -> None:
     """
     Re-encode any clip (or still image) to a normalised H.264/AAC MP4.
     - Still images: converted to video at hold_duration seconds
@@ -151,27 +214,83 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
     """
     ffmpeg = str(get_ffmpeg())
     enc = encoder_flags(encoder)
+
+    # ── Title card ────────────────────────────────────────────────────────────
+    if src.suffix.lower() == ".titlecard":
+        _render_title_card(src, dest, encoder, target_resolution, hold_duration,
+                           progress_cb, base_fraction, fraction_range)
+        return
+
     is_image = src.suffix.lower() in IMAGE_EXTENSIONS
 
     if target_resolution:
         tw, th = target_resolution
-        scale_vf = (
+        base_scale_vf = (
             f"scale={tw}:{th}:force_original_aspect_ratio=decrease,"
             f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2:black,"
             "setsar=1,format=yuv420p,fps=30"
         )
     else:
-        scale_vf = (
+        tw = th = None
+        base_scale_vf = (
             "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
             "pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:black,"
             "setsar=1,format=yuv420p,fps=30"
         )
 
     if is_image:
+        if ken_burns:
+            # Resolve Ken Burns canvas dimensions
+            if tw and th:
+                kb_w, kb_h = tw, th
+            else:
+                _, pw, ph = _probe_streams(src)
+                if pw and ph:
+                    cap = min(1.0, 1920 / max(pw, ph))
+                    kb_w = max(2, int(pw * cap) // 2 * 2)
+                    kb_h = max(2, int(ph * cap) // 2 * 2)
+                else:
+                    kb_w, kb_h = 1920, 1080
+
+            zp_d = max(30, int(hold_duration * 30))
+            s = ken_burns_style % 4
+            if s == 0:    # zoom in from centre
+                zp_z = "min(zoom+0.0015\\,1.3)"
+                zp_x = "iw/2-(iw/zoom/2)"
+                zp_y = "ih/2-(ih/zoom/2)"
+            elif s == 1:  # zoom out to centre
+                zp_z = "if(eq(on\\,0)\\,1.3\\,max(zoom-0.0015\\,1))"
+                zp_x = "iw/2-(iw/zoom/2)"
+                zp_y = "ih/2-(ih/zoom/2)"
+            elif s == 2:  # slow pan right
+                zp_z = "1.15"
+                zp_x = f"(iw-iw/zoom)*on/{zp_d}"
+                zp_y = "ih/2-(ih/zoom/2)"
+            else:         # slow pan left
+                zp_z = "1.15"
+                zp_x = f"(iw-iw/zoom)*(1-on/{zp_d})"
+                zp_y = "ih/2-(ih/zoom/2)"
+
+            scale_vf = (
+                f"scale={kb_w}:{kb_h}:force_original_aspect_ratio=decrease,"
+                f"pad={kb_w}:{kb_h}:(ow-iw)/2:(oh-ih)/2:black,"
+                f"setsar=1,"
+                f"zoompan=z={zp_z}:x={zp_x}:y={zp_y}"
+                f":d={zp_d}:s={kb_w}x{kb_h}:fps=30,"
+                f"format=yuv420p"
+            )
+        else:
+            scale_vf = base_scale_vf
+
         cmd = [
             ffmpeg, "-y",
             "-loop", "1", "-framerate", "30", "-i", str(src),
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            # Explicit stream mapping: video from the image (input 0), audio from
+            # anullsrc (input 1).  Without this, FFmpeg 8.1's auto-mapping can
+            # silently drop the video stream when it sees multiple inputs, which
+            # produces an audio-only output that plays as a black screen.
+            "-map", "0:v:0", "-map", "1:a:0",
             "-vf", scale_vf,
         ] + enc + [
             "-t", f"{hold_duration:.3f}",
@@ -185,6 +304,8 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
         total_frames = int(hold_duration * 30)
         _run_ffmpeg(cmd, progress_cb, base_fraction, fraction_range, total_frames)
         return
+
+    scale_vf = base_scale_vf
 
     has_audio, w, h = _probe_streams(src)
 
@@ -244,16 +365,16 @@ def _get_clip_width(clip: Path) -> int:
         return 1920
 
 
-def _wrap_for_drawtext(escaped_text: str, font_size: int, video_w: int) -> str:
+def _wrap_lines(text: str, font_size: int, video_w: int) -> list[str]:
     """
-    Word-wrap pre-escaped drawtext text so it fits inside video_w pixels.
-    Returns text with drawtext literal newlines (\\n = backslash + n).
-    Proportional fonts average roughly 0.55× font_size per character.
+    Split text into lines that fit inside video_w pixels.
+    Uses 0.5× font_size per character — conservative for wide/bold fonts.
+    Returns a list with at least one element.
     """
-    chars_per_line = max(8, int(video_w / (font_size * 0.55)))
-    lines = _textwrap.wrap(escaped_text, width=chars_per_line,
+    chars_per_line = max(8, int(video_w * 0.85 / (font_size * 0.75)))
+    lines = _textwrap.wrap(text, width=chars_per_line,
                            break_long_words=True, break_on_hyphens=False)
-    return "\\n".join(lines) if lines else escaped_text
+    return lines if lines else [text]
 
 
 def apply_text_overlay(
@@ -288,84 +409,118 @@ def apply_text_overlay(
     vis_dur  = min(text_duration, max(0.5, clip_dur - start_time - 0.5))
     end_time = start_time + vis_dur
 
-    y_map = {
-        "Top":    "h*0.08",
-        "Center": "(h-text_h)/2",
-        "Bottom": "h*0.82-text_h",
-    }
-    y_expr = y_map.get(position, "(h-text_h)/2")
-
-    # Escape text for the drawtext text= option.
-    # In FFmpeg's filter option string a single-quote starts a "quoted string"
-    # mode that suppresses the : separator — any unmatched ' causes a parse
-    # error.  Order matters: escape \ first so subsequent \-prefixes aren't
-    # doubled, then escape ' and :, then %% for drawtext's strftime formatter.
-    escaped_text = (
-        text
-        .replace("\\", "\\\\")
-        .replace("'",  "\\'")
-        .replace(":",  "\\:")
-        .replace("%",  "%%")
-    )
-
-    # Auto word-wrap: split the text into multiple lines so it never overflows
-    # the frame.  We do this on the already-escaped text so the wrap width
-    # calculation uses the same characters that will appear on screen.
+    # Wrap text into lines then render each line as its own drawtext filter.
+    # This avoids relying on drawtext's \n / textfile newline handling, which
+    # is inconsistent across FFmpeg builds and broken for multi-line on Windows.
+    # Each line gets an explicit pixel Y offset so they stack correctly.
     video_w = _get_clip_width(src)
-    escaped_text = _wrap_for_drawtext(escaped_text, font_size, video_w)
+    raw_lines = _wrap_lines(text, font_size, video_w)
+    log_info(f"text wrap: video_w={video_w} font_size={font_size} "
+             f"lines={len(raw_lines)} text={text!r}")
 
-    # FFmpeg 8.1 broke both \: and single-quote quoting for Windows drive-letter
-    # colons (C:) inside filter option values — the option parser splits on ALL
-    # colons before quoting is applied.
-    # Fix: use text= instead of textfile= (no path in the filter at all), and
-    # strip the drive letter from the fontfile path so C:/path → /path.
-    # FFmpeg resolves /path relative to the current drive (C:), so the file is
-    # found correctly as long as it's on the same drive as the binary (it always
-    # is — both live under APP_DIR).
+    n_lines   = len(raw_lines)
+    # Line height: font_size + 2×boxborder (12 each side) + 16 px gap
+    line_h    = font_size + 40
+
     import re as _re
     def _nodrive(p: str) -> str:
         return _re.sub(r'^[A-Za-z]:', '', p.replace("\\", "/"))
 
-    parts = [
-        f"text={escaped_text}",
-        f"fontsize={font_size}",
-        f"fontcolor={color}",
-        "x=(w-text_w)/2",
-        f"y={y_expr}",
-        # Dark box behind text for readability.
-        # Use hex alpha (0xRRGGBBAA) instead of color@alpha notation —
-        # the @ char can confuse FFmpeg 8.1's filter option tokenizer.
-        "box=1",
-        "boxcolor=0x00000088",
-        "boxborderw=12",
-        # Drop shadow for depth
-        "shadowcolor=0x000000CC",
-        "shadowx=2",
-        "shadowy=2",
-        # enable= MUST be last: FFmpeg 8.1's timeline expression parser
-        # greedily consumes the option tokens that follow it (treating
-        # ':box=' as part of the expression), leaving '1' as a dangling
-        # token that fails option-name validation.  Placing enable last
-        # means there is nothing after it for the greedy parser to eat.
-        f"enable=between(t\\,{start_time:.2f}\\,{end_time:.2f})",
-    ]
+    # Resolve font copy once (drive-letter issue, same logic as before)
+    font_copy_path: str | None = None
     if font_path and Path(font_path).exists():
-        # Copy font to the output's directory so it's on the same drive as the
-        # exe.  _nodrive strips the Windows drive letter (C:) from the path so
-        # FFmpeg's filter option parser doesn't choke on the colon — but the
-        # resulting /Windows/Fonts/... path is resolved relative to the CURRENT
-        # DRIVE.  If the app is installed on D: the system fonts are on C: and
-        # the path silently resolves wrong.  A local copy always lives on the
-        # same drive as the exe, so _nodrive always produces a correct path.
         import shutil as _shutil
-        font_copy = dest.parent / ("_overlay_font" + Path(font_path).suffix)
-        _shutil.copy2(font_path, str(font_copy))
-        parts.insert(1, f"fontfile={_nodrive(str(font_copy))}")
+        fc = dest.parent / ("_overlay_font" + Path(font_path).suffix)
+        _shutil.copy2(font_path, str(fc))
+        font_copy_path = _nodrive(str(fc))
 
-    drawtext = "drawtext=" + ":".join(parts)
+    enable = f"enable=between(t\\,{start_time:.2f}\\,{end_time:.2f})"
+
+    drawtext_filters: list[str] = []
+    total_h = n_lines * line_h
+
+    for idx, line in enumerate(raw_lines):
+        # Escape the individual line for the drawtext text= option.
+        esc = (
+            line
+            .replace("\\", "\\\\")
+            .replace("'",  "\\'")
+            .replace(":",  "\\:")
+            .replace("%",  "%%")
+        )
+
+        # Y for this specific line within the block
+        if position == "Top":
+            y_expr = f"h*0.08+{idx * line_h}"
+        elif position == "Bottom":
+            y_expr = f"h*0.82-{total_h}+{idx * line_h}"
+        else:  # Center
+            y_expr = f"(h-{total_h})/2+{idx * line_h}"
+
+        parts = [
+            f"text={esc}",
+            f"fontsize={font_size}",
+            f"fontcolor={color}",
+            "x=(w-text_w)/2",
+            f"y={y_expr}",
+            "box=1",
+            "boxcolor=0x00000088",
+            "boxborderw=12",
+            "shadowcolor=0x000000CC",
+            "shadowx=2",
+            "shadowy=2",
+            # enable= MUST be last (FFmpeg 8.1 greedy timeline parser)
+            enable,
+        ]
+        if font_copy_path:
+            parts.insert(1, f"fontfile={font_copy_path}")
+
+        drawtext_filters.append("drawtext=" + ":".join(parts))
+
+    vf = ",".join(drawtext_filters)
     cmd = [ffmpeg, "-y", "-i", str(src),
-           "-vf", drawtext,
+           "-vf", vf,
            ] + sw_enc + [
+        "-c:a", "copy",
+        str(dest),
+    ]
+    _run_ffmpeg(cmd)
+
+
+def _apply_watermark(
+    src: Path, dest: Path,
+    wm_path: str,
+    position: str,
+    opacity: float,
+    size_pct: int,
+) -> None:
+    """Overlay a PNG watermark on the final video."""
+    ffmpeg  = str(get_ffmpeg())
+    video_w = _get_clip_width(src)
+    wm_px   = max(32, int(video_w * size_pct / 100))
+
+    pos_map = {
+        "Bottom-Right": f"x=main_w-overlay_w-20:y=main_h-overlay_h-20",
+        "Bottom-Left":  f"x=20:y=main_h-overlay_h-20",
+        "Top-Right":    f"x=main_w-overlay_w-20:y=20",
+        "Top-Left":     f"x=20:y=20",
+        "Center":       f"x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2",
+    }
+    xy = pos_map.get(position, pos_map["Bottom-Right"])
+
+    fcomplex = (
+        f"[1:v]scale={wm_px}:-1:flags=lanczos,"
+        f"format=rgba,"
+        f"colorchannelmixer=aa={opacity:.2f}[wm];"
+        f"[0:v][wm]overlay={xy}:shortest=1"
+    )
+    cmd = [
+        ffmpeg, "-y",
+        "-i", str(src),
+        "-i", wm_path,
+        "-filter_complex", fcomplex,
+        "-c:v", "libx264", "-preset", "faster", "-crf", "18",
+        "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         str(dest),
     ]
@@ -420,6 +575,11 @@ class RenderJob:
         slideshow_hold: float | None = None,
         transition_style: str = "Auto (genre default)",
         transition_duration: float = 0.0,
+        ken_burns: bool = False,
+        watermark_path: str = "",
+        watermark_position: str = "Bottom-Right",
+        watermark_opacity: float = 0.8,
+        watermark_size_pct: int = 15,
     ):
         self.clips = clips
         self.music_files = music_files
@@ -444,7 +604,12 @@ class RenderJob:
         self.slideshow_resolution = slideshow_resolution
         self.slideshow_hold = slideshow_hold
         self.transition_style = transition_style or "Auto (genre default)"
-        self.transition_duration = transition_duration  # 0.0 means "use genre default"
+        self.transition_duration = transition_duration
+        self.ken_burns = ken_burns
+        self.watermark_path = watermark_path
+        self.watermark_position = watermark_position
+        self.watermark_opacity = watermark_opacity
+        self.watermark_size_pct = watermark_size_pct
         self.cancelled = False
         self.temp_dir = TEMP_DIR / "render"
         # Clear stale temp files unless resuming a previous session
@@ -560,6 +725,8 @@ class RenderJob:
                         fraction_range=(1 / total * 0.25),
                         hold_duration=hold_duration,
                         target_resolution=target_resolution,
+                        ken_burns=self.ken_burns,
+                        ken_burns_style=i,
                     )
                 except Exception as exc:
                     log_error(exc, f"clip {i}")
@@ -802,7 +969,26 @@ class RenderJob:
 
         # ── Step 5: Loudness master ───────────────────────────────────────
         self._report(0.97, "Mastering audio…")
-        normalize_audio(with_music, self.output_path)
+        wm_active = bool(self.watermark_path and Path(self.watermark_path).exists())
+        norm_out  = self.temp_dir / "norm.mp4" if wm_active else self.output_path
+        normalize_audio(with_music, norm_out)
+
+        # ── Step 6: Watermark (optional) ─────────────────────────────────
+        if wm_active:
+            self._report(0.98, "Applying watermark…")
+            try:
+                _apply_watermark(
+                    norm_out, self.output_path,
+                    wm_path=self.watermark_path,
+                    position=self.watermark_position,
+                    opacity=self.watermark_opacity,
+                    size_pct=self.watermark_size_pct,
+                )
+            except Exception as exc:
+                log_error(exc, "watermark")
+                self._report(0.98, "Watermark failed — check log; saving without watermark")
+                import shutil as _shutil2
+                _shutil2.copy2(str(norm_out), str(self.output_path))
 
         session_store.clear()
         # Clean up all temp files now that the output is finalised
