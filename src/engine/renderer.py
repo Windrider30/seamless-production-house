@@ -172,6 +172,11 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
             ffmpeg, "-y",
             "-loop", "1", "-framerate", "30", "-i", str(src),
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            # Explicit stream mapping: video from the image (input 0), audio from
+            # anullsrc (input 1).  Without this, FFmpeg 8.1's auto-mapping can
+            # silently drop the video stream when it sees multiple inputs, which
+            # produces an audio-only output that plays as a black screen.
+            "-map", "0:v:0", "-map", "1:a:0",
             "-vf", scale_vf,
         ] + enc + [
             "-t", f"{hold_duration:.3f}",
@@ -189,13 +194,17 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
     has_audio, w, h = _probe_streams(src)
 
     inputs: list[str] = ["-i", str(src)]
+    extra_map: list[str] = []
     if not has_audio:
         inputs += ["-f", "lavfi",
                    "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+        # FFmpeg 8.1: explicit mapping required when there are 2 inputs or
+        # the video stream can be silently dropped → black screen.
+        extra_map = ["-map", "0:v:0", "-map", "1:a:0"]
 
     video_filters = ["-vf", scale_vf]
 
-    cmd = [ffmpeg, "-y"] + inputs + video_filters + enc + [
+    cmd = [ffmpeg, "-y"] + inputs + video_filters + extra_map + enc + [
         "-g", "90",                  # keyframe every 3 s — fast seeking, no decoder spin
         "-bf", "0",                  # no B-frames — clean DTS for concat demuxer
         "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
@@ -244,16 +253,16 @@ def _get_clip_width(clip: Path) -> int:
         return 1920
 
 
-def _wrap_for_drawtext(escaped_text: str, font_size: int, video_w: int) -> str:
+def _wrap_lines(text: str, font_size: int, video_w: int) -> list[str]:
     """
-    Word-wrap pre-escaped drawtext text so it fits inside video_w pixels.
-    Returns text with drawtext literal newlines (\\n = backslash + n).
-    Proportional fonts average roughly 0.55× font_size per character.
+    Split text into lines that fit inside video_w pixels.
+    Uses 0.5× font_size per character — conservative for wide/bold fonts.
+    Returns a list with at least one element.
     """
-    chars_per_line = max(8, int(video_w / (font_size * 0.55)))
-    lines = _textwrap.wrap(escaped_text, width=chars_per_line,
+    chars_per_line = max(8, int(video_w * 0.85 / (font_size * 0.75)))
+    lines = _textwrap.wrap(text, width=chars_per_line,
                            break_long_words=True, break_on_hyphens=False)
-    return "\\n".join(lines) if lines else escaped_text
+    return lines if lines else [text]
 
 
 def apply_text_overlay(
@@ -288,83 +297,77 @@ def apply_text_overlay(
     vis_dur  = min(text_duration, max(0.5, clip_dur - start_time - 0.5))
     end_time = start_time + vis_dur
 
-    y_map = {
-        "Top":    "h*0.08",
-        "Center": "(h-text_h)/2",
-        "Bottom": "h*0.82-text_h",
-    }
-    y_expr = y_map.get(position, "(h-text_h)/2")
-
-    # Escape text for the drawtext text= option.
-    # In FFmpeg's filter option string a single-quote starts a "quoted string"
-    # mode that suppresses the : separator — any unmatched ' causes a parse
-    # error.  Order matters: escape \ first so subsequent \-prefixes aren't
-    # doubled, then escape ' and :, then %% for drawtext's strftime formatter.
-    escaped_text = (
-        text
-        .replace("\\", "\\\\")
-        .replace("'",  "\\'")
-        .replace(":",  "\\:")
-        .replace("%",  "%%")
-    )
-
-    # Auto word-wrap: split the text into multiple lines so it never overflows
-    # the frame.  We do this on the already-escaped text so the wrap width
-    # calculation uses the same characters that will appear on screen.
+    # Wrap text into lines then render each line as its own drawtext filter.
+    # This avoids relying on drawtext's \n / textfile newline handling, which
+    # is inconsistent across FFmpeg builds and broken for multi-line on Windows.
+    # Each line gets an explicit pixel Y offset so they stack correctly.
     video_w = _get_clip_width(src)
-    escaped_text = _wrap_for_drawtext(escaped_text, font_size, video_w)
+    raw_lines = _wrap_lines(text, font_size, video_w)
+    log_info(f"text wrap: video_w={video_w} font_size={font_size} "
+             f"lines={len(raw_lines)} text={text!r}")
 
-    # FFmpeg 8.1 broke both \: and single-quote quoting for Windows drive-letter
-    # colons (C:) inside filter option values — the option parser splits on ALL
-    # colons before quoting is applied.
-    # Fix: use text= instead of textfile= (no path in the filter at all), and
-    # strip the drive letter from the fontfile path so C:/path → /path.
-    # FFmpeg resolves /path relative to the current drive (C:), so the file is
-    # found correctly as long as it's on the same drive as the binary (it always
-    # is — both live under APP_DIR).
+    n_lines   = len(raw_lines)
+    # Line height: font_size + 2×boxborder (12 each side) + 16 px gap
+    line_h    = font_size + 40
+
     import re as _re
     def _nodrive(p: str) -> str:
         return _re.sub(r'^[A-Za-z]:', '', p.replace("\\", "/"))
 
-    parts = [
-        f"text={escaped_text}",
-        f"fontsize={font_size}",
-        f"fontcolor={color}",
-        "x=(w-text_w)/2",
-        f"y={y_expr}",
-        # Dark box behind text for readability.
-        # Use hex alpha (0xRRGGBBAA) instead of color@alpha notation —
-        # the @ char can confuse FFmpeg 8.1's filter option tokenizer.
-        "box=1",
-        "boxcolor=0x00000088",
-        "boxborderw=12",
-        # Drop shadow for depth
-        "shadowcolor=0x000000CC",
-        "shadowx=2",
-        "shadowy=2",
-        # enable= MUST be last: FFmpeg 8.1's timeline expression parser
-        # greedily consumes the option tokens that follow it (treating
-        # ':box=' as part of the expression), leaving '1' as a dangling
-        # token that fails option-name validation.  Placing enable last
-        # means there is nothing after it for the greedy parser to eat.
-        f"enable=between(t\\,{start_time:.2f}\\,{end_time:.2f})",
-    ]
+    # Resolve font copy once (drive-letter issue, same logic as before)
+    font_copy_path: str | None = None
     if font_path and Path(font_path).exists():
-        # Copy font to the output's directory so it's on the same drive as the
-        # exe.  _nodrive strips the Windows drive letter (C:) from the path so
-        # FFmpeg's filter option parser doesn't choke on the colon — but the
-        # resulting /Windows/Fonts/... path is resolved relative to the CURRENT
-        # DRIVE.  If the app is installed on D: the system fonts are on C: and
-        # the path silently resolves wrong.  A local copy always lives on the
-        # same drive as the exe, so _nodrive always produces a correct path.
         import shutil as _shutil
-        font_copy = dest.parent / ("_overlay_font" + Path(font_path).suffix)
-        _shutil.copy2(font_path, str(font_copy))
-        parts.insert(1, f"fontfile={_nodrive(str(font_copy))}")
+        fc = dest.parent / ("_overlay_font" + Path(font_path).suffix)
+        _shutil.copy2(font_path, str(fc))
+        font_copy_path = _nodrive(str(fc))
 
-    drawtext = "drawtext=" + ":".join(parts)
+    enable = f"enable=between(t\\,{start_time:.2f}\\,{end_time:.2f})"
+
+    drawtext_filters: list[str] = []
+    total_h = n_lines * line_h
+
+    for idx, line in enumerate(raw_lines):
+        # Escape the individual line for the drawtext text= option.
+        esc = (
+            line
+            .replace("\\", "\\\\")
+            .replace("'",  "\\'")
+            .replace(":",  "\\:")
+            .replace("%",  "%%")
+        )
+
+        # Y for this specific line within the block
+        if position == "Top":
+            y_expr = f"h*0.08+{idx * line_h}"
+        elif position == "Bottom":
+            y_expr = f"h*0.82-{total_h}+{idx * line_h}"
+        else:  # Center
+            y_expr = f"(h-{total_h})/2+{idx * line_h}"
+
+        parts = [
+            f"text={esc}",
+            f"fontsize={font_size}",
+            f"fontcolor={color}",
+            "x=(w-text_w)/2",
+            f"y={y_expr}",
+            "box=1",
+            "boxcolor=0x00000088",
+            "boxborderw=12",
+            "shadowcolor=0x000000CC",
+            "shadowx=2",
+            "shadowy=2",
+            # enable= MUST be last (FFmpeg 8.1 greedy timeline parser)
+            enable,
+        ]
+        if font_copy_path:
+            parts.insert(1, f"fontfile={font_copy_path}")
+
+        drawtext_filters.append("drawtext=" + ":".join(parts))
+
+    vf = ",".join(drawtext_filters)
     cmd = [ffmpeg, "-y", "-i", str(src),
-           "-vf", drawtext,
+           "-vf", vf,
            ] + sw_enc + [
         "-c:a", "copy",
         str(dest),
