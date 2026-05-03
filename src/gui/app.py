@@ -157,7 +157,7 @@ class App(_Base):
         self._music_panel.grid_remove()
 
         # Clip queue
-        self._queue = QueuePanel(col)
+        self._queue = QueuePanel(col, on_add_titlecard=self._on_titlecard_added)
         self._queue.grid(row=2, column=0, sticky="nsew")
 
     def _build_right(self, parent) -> None:
@@ -271,6 +271,11 @@ class App(_Base):
         )
 
     # ── Drop handlers ────────────────────────────────────────────────────────
+    def _on_titlecard_added(self, tc_path: Path) -> None:
+        # Title card was added directly to queue; sync app's clip list
+        self._clips = self._queue.get_clips()
+        self._drop_panel.clips_zone._set_count(len(self._clips))
+
     def _on_clips_dropped(self, clips: list[Path]) -> None:
         # Accumulate: adding more clips merges with existing list
         combined = list(dict.fromkeys(self._clips + clips))
@@ -345,9 +350,12 @@ class App(_Base):
         )
         TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
+        # Use queue's current order (respects reordering and removal)
+        render_clips = self._queue.get_clips()
+
         # Save session before starting
         session_store.save({
-            "clips": [str(c) for c in self._clips],
+            "clips": [str(c) for c in render_clips],
             "music_files": [str(m) for m in self._music],
             "genre": self._settings.genre,
             "content_type": self._settings.content_type,
@@ -362,7 +370,7 @@ class App(_Base):
         self._progress.start()
 
         self._render_job = RenderJob(
-            clips=self._clips,
+            clips=render_clips,
             music_files=self._music,
             genre=self._settings.genre,
             content_type=self._settings.content_type,
@@ -385,6 +393,11 @@ class App(_Base):
             slideshow_hold=self._settings.slideshow_hold,
             transition_style=self._settings.transition_style,
             transition_duration=self._settings.transition_duration,
+            ken_burns=self._settings.ken_burns,
+            watermark_path=self._settings.watermark_path,
+            watermark_position=self._settings.watermark_position,
+            watermark_opacity=self._settings.watermark_opacity,
+            watermark_size_pct=self._settings.watermark_size_pct,
         )
         threading.Thread(target=self._render_job.run, daemon=True).start()
 

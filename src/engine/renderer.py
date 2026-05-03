@@ -17,7 +17,7 @@ import textwrap as _textwrap
 from src.config import (
     GENRES, CONTENT_TYPES, SEGMENT_DURATION,
     L_CUT_SECONDS, VIDEO_EXTENSIONS, IMAGE_EXTENSIONS, TEMP_DIR,
-    TRANSITION_STYLES,
+    TRANSITION_STYLES, TITLE_CARDS_DIR,
 )
 from src.engine.hardware import detect_encoder, encoder_flags
 from src.engine.transitions import (
@@ -135,12 +135,75 @@ def _probe_streams(src: Path) -> tuple[bool, int, int]:
         return False, 0, 0
 
 
+def _render_title_card(
+    spec: Path, dest: Path, encoder: str,
+    target_resolution: tuple[int, int] | None = None,
+    hold_duration: float = 5.0,
+    progress_cb: ProgressCB | None = None,
+    base_fraction: float = 0.0,
+    fraction_range: float = 0.0,
+) -> None:
+    """Generate a solid-colour clip with centred text from a .titlecard JSON spec."""
+    import json as _json
+    data = _json.loads(spec.read_text(encoding="utf-8"))
+    text      = data.get("text", "Title Card")
+    bg_hex    = data.get("bg_color", "0x000000")
+    txt_color = data.get("text_color", "white")
+    font_size = int(data.get("font_size", 80))
+    duration  = float(data.get("duration", hold_duration))
+    if target_resolution:
+        tw, th = target_resolution
+    else:
+        tw = int(data.get("width",  1920))
+        th = int(data.get("height", 1080))
+
+    ffmpeg = str(get_ffmpeg())
+    enc    = encoder_flags(encoder)
+
+    lines   = _wrap_lines(text, font_size, tw)
+    n_lines = len(lines)
+    line_h  = font_size + 40
+    total_h = n_lines * line_h
+
+    dt_parts: list[str] = []
+    for idx, line in enumerate(lines):
+        esc = (line.replace("\\", "\\\\")
+                   .replace("'",  "\\'")
+                   .replace(":",  "\\:")
+                   .replace("%",  "%%"))
+        y_expr = f"(h-{total_h})/2+{idx * line_h}"
+        dt_parts.append(
+            f"drawtext=text={esc}:fontsize={font_size}"
+            f":fontcolor={txt_color}:x=(w-text_w)/2:y={y_expr}"
+            f":shadowcolor=0x000000CC:shadowx=2:shadowy=2"
+        )
+
+    vf  = "setsar=1,format=yuv420p,fps=30," + ",".join(dt_parts)
+    cmd = [
+        ffmpeg, "-y",
+        "-f", "lavfi", "-i", f"color=c={bg_hex}:s={tw}x{th}:r=30",
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-vf", vf,
+    ] + enc + [
+        "-t", f"{duration:.3f}",
+        "-g", "90", "-bf", "0",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart", "-shortest",
+        str(dest),
+    ]
+    _run_ffmpeg(cmd, progress_cb, base_fraction, fraction_range,
+                int(duration * 30))
+
+
 def preconvert_clip(src: Path, dest: Path, encoder: str,
                     progress_cb: ProgressCB | None = None,
                     base_fraction: float = 0.0,
                     fraction_range: float = 0.0,
                     hold_duration: float = 5.0,
-                    target_resolution: tuple[int, int] | None = None) -> None:
+                    target_resolution: tuple[int, int] | None = None,
+                    ken_burns: bool = False,
+                    ken_burns_style: int = 0) -> None:
     """
     Re-encode any clip (or still image) to a normalised H.264/AAC MP4.
     - Still images: converted to video at hold_duration seconds
@@ -151,23 +214,74 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
     """
     ffmpeg = str(get_ffmpeg())
     enc = encoder_flags(encoder)
+
+    # ── Title card ────────────────────────────────────────────────────────────
+    if src.suffix.lower() == ".titlecard":
+        _render_title_card(src, dest, encoder, target_resolution, hold_duration,
+                           progress_cb, base_fraction, fraction_range)
+        return
+
     is_image = src.suffix.lower() in IMAGE_EXTENSIONS
 
     if target_resolution:
         tw, th = target_resolution
-        scale_vf = (
+        base_scale_vf = (
             f"scale={tw}:{th}:force_original_aspect_ratio=decrease,"
             f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2:black,"
             "setsar=1,format=yuv420p,fps=30"
         )
     else:
-        scale_vf = (
+        tw = th = None
+        base_scale_vf = (
             "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
             "pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:black,"
             "setsar=1,format=yuv420p,fps=30"
         )
 
     if is_image:
+        if ken_burns:
+            # Resolve Ken Burns canvas dimensions
+            if tw and th:
+                kb_w, kb_h = tw, th
+            else:
+                _, pw, ph = _probe_streams(src)
+                if pw and ph:
+                    cap = min(1.0, 1920 / max(pw, ph))
+                    kb_w = max(2, int(pw * cap) // 2 * 2)
+                    kb_h = max(2, int(ph * cap) // 2 * 2)
+                else:
+                    kb_w, kb_h = 1920, 1080
+
+            zp_d = max(30, int(hold_duration * 30))
+            s = ken_burns_style % 4
+            if s == 0:    # zoom in from centre
+                zp_z = "min(zoom+0.0015\\,1.3)"
+                zp_x = "iw/2-(iw/zoom/2)"
+                zp_y = "ih/2-(ih/zoom/2)"
+            elif s == 1:  # zoom out to centre
+                zp_z = "if(eq(on\\,0)\\,1.3\\,max(zoom-0.0015\\,1))"
+                zp_x = "iw/2-(iw/zoom/2)"
+                zp_y = "ih/2-(ih/zoom/2)"
+            elif s == 2:  # slow pan right
+                zp_z = "1.15"
+                zp_x = f"(iw-iw/zoom)*on/{zp_d}"
+                zp_y = "ih/2-(ih/zoom/2)"
+            else:         # slow pan left
+                zp_z = "1.15"
+                zp_x = f"(iw-iw/zoom)*(1-on/{zp_d})"
+                zp_y = "ih/2-(ih/zoom/2)"
+
+            scale_vf = (
+                f"scale={kb_w}:{kb_h}:force_original_aspect_ratio=decrease,"
+                f"pad={kb_w}:{kb_h}:(ow-iw)/2:(oh-ih)/2:black,"
+                f"setsar=1,"
+                f"zoompan=z={zp_z}:x={zp_x}:y={zp_y}"
+                f":d={zp_d}:s={kb_w}x{kb_h}:fps=30,"
+                f"format=yuv420p"
+            )
+        else:
+            scale_vf = base_scale_vf
+
         cmd = [
             ffmpeg, "-y",
             "-loop", "1", "-framerate", "30", "-i", str(src),
@@ -190,6 +304,8 @@ def preconvert_clip(src: Path, dest: Path, encoder: str,
         total_frames = int(hold_duration * 30)
         _run_ffmpeg(cmd, progress_cb, base_fraction, fraction_range, total_frames)
         return
+
+    scale_vf = base_scale_vf
 
     has_audio, w, h = _probe_streams(src)
 
@@ -375,6 +491,46 @@ def apply_text_overlay(
     _run_ffmpeg(cmd)
 
 
+def _apply_watermark(
+    src: Path, dest: Path,
+    wm_path: str,
+    position: str,
+    opacity: float,
+    size_pct: int,
+) -> None:
+    """Overlay a PNG watermark on the final video."""
+    ffmpeg  = str(get_ffmpeg())
+    video_w = _get_clip_width(src)
+    wm_px   = max(32, int(video_w * size_pct / 100))
+
+    pos_map = {
+        "Bottom-Right": f"x=main_w-overlay_w-20:y=main_h-overlay_h-20",
+        "Bottom-Left":  f"x=20:y=main_h-overlay_h-20",
+        "Top-Right":    f"x=main_w-overlay_w-20:y=20",
+        "Top-Left":     f"x=20:y=20",
+        "Center":       f"x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2",
+    }
+    xy = pos_map.get(position, pos_map["Bottom-Right"])
+
+    fcomplex = (
+        f"[1:v]scale={wm_px}:-1:flags=lanczos,"
+        f"format=rgba,"
+        f"colorchannelmixer=aa={opacity:.2f}[wm];"
+        f"[0:v][wm]overlay={xy}:shortest=1"
+    )
+    cmd = [
+        ffmpeg, "-y",
+        "-i", str(src),
+        "-i", wm_path,
+        "-filter_complex", fcomplex,
+        "-c:v", "libx264", "-preset", "faster", "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "copy",
+        str(dest),
+    ]
+    _run_ffmpeg(cmd)
+
+
 def concat_segments(segments: list[Path], output: Path, encoder: str) -> None:
     """Losslessly join completed segments into the final file."""
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -423,6 +579,11 @@ class RenderJob:
         slideshow_hold: float | None = None,
         transition_style: str = "Auto (genre default)",
         transition_duration: float = 0.0,
+        ken_burns: bool = False,
+        watermark_path: str = "",
+        watermark_position: str = "Bottom-Right",
+        watermark_opacity: float = 0.8,
+        watermark_size_pct: int = 15,
     ):
         self.clips = clips
         self.music_files = music_files
@@ -447,7 +608,12 @@ class RenderJob:
         self.slideshow_resolution = slideshow_resolution
         self.slideshow_hold = slideshow_hold
         self.transition_style = transition_style or "Auto (genre default)"
-        self.transition_duration = transition_duration  # 0.0 means "use genre default"
+        self.transition_duration = transition_duration
+        self.ken_burns = ken_burns
+        self.watermark_path = watermark_path
+        self.watermark_position = watermark_position
+        self.watermark_opacity = watermark_opacity
+        self.watermark_size_pct = watermark_size_pct
         self.cancelled = False
         self.temp_dir = TEMP_DIR / "render"
         # Clear stale temp files unless resuming a previous session
@@ -563,6 +729,8 @@ class RenderJob:
                         fraction_range=(1 / total * 0.25),
                         hold_duration=hold_duration,
                         target_resolution=target_resolution,
+                        ken_burns=self.ken_burns,
+                        ken_burns_style=i,
                     )
                 except Exception as exc:
                     log_error(exc, f"clip {i}")
@@ -805,7 +973,26 @@ class RenderJob:
 
         # ── Step 5: Loudness master ───────────────────────────────────────
         self._report(0.97, "Mastering audio…")
-        normalize_audio(with_music, self.output_path)
+        wm_active = bool(self.watermark_path and Path(self.watermark_path).exists())
+        norm_out  = self.temp_dir / "norm.mp4" if wm_active else self.output_path
+        normalize_audio(with_music, norm_out)
+
+        # ── Step 6: Watermark (optional) ─────────────────────────────────
+        if wm_active:
+            self._report(0.98, "Applying watermark…")
+            try:
+                _apply_watermark(
+                    norm_out, self.output_path,
+                    wm_path=self.watermark_path,
+                    position=self.watermark_position,
+                    opacity=self.watermark_opacity,
+                    size_pct=self.watermark_size_pct,
+                )
+            except Exception as exc:
+                log_error(exc, "watermark")
+                self._report(0.98, "Watermark failed — check log; saving without watermark")
+                import shutil as _shutil2
+                _shutil2.copy2(str(norm_out), str(self.output_path))
 
         session_store.clear()
         # Clean up all temp files now that the output is finalised

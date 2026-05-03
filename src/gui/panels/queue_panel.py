@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import json
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -10,7 +11,7 @@ import sys
 
 import customtkinter as ctk
 
-from src.config import C, IMAGE_EXTENSIONS
+from src.config import C, IMAGE_EXTENSIONS, TITLE_CARDS_DIR, TITLE_CARD_BG_COLORS, TEXT_COLORS
 from src.utils.path_checker import get_ffmpeg, get_ffprobe
 
 CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -54,6 +55,7 @@ class ClipRow(ctk.CTkFrame):
         super().__init__(parent, fg_color=C["card"], corner_radius=6, **kwargs)
         self._index = index
         self._path = path
+        self._is_title_card = path.suffix.lower() == ".titlecard"
 
         num_lbl = ctk.CTkLabel(
             self, text=f"{index+1:>3}.",
@@ -62,23 +64,39 @@ class ClipRow(ctk.CTkFrame):
         )
         num_lbl.pack(side="left", padx=(8, 4))
 
+        # Title cards show their text; clips show filename
+        if self._is_title_card:
+            try:
+                tc_data = json.loads(path.read_text(encoding="utf-8"))
+                display_name = f'"{tc_data.get("text", path.stem)}"'
+            except Exception:
+                display_name = path.stem
+        else:
+            display_name = path.name
+
         name_lbl = ctk.CTkLabel(
-            self, text=path.name,
+            self, text=display_name,
             font=ctk.CTkFont(size=12),
             text_color=C["text"],
             anchor="w",
         )
         name_lbl.pack(side="left", expand=True, fill="x", padx=(0, 4))
 
-        if show_intro_badge:
+        if self._is_title_card:
             ctk.CTkLabel(
-                self, text="🎬 Intro",
+                self, text="T Card",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=C["warning"],
+            ).pack(side="left", padx=(0, 6))
+        elif show_intro_badge:
+            ctk.CTkLabel(
+                self, text="Intro",
                 font=ctk.CTkFont(size=10, weight="bold"),
                 text_color=C["emerald"],
             ).pack(side="left", padx=(0, 6))
         elif show_outro_badge:
             ctk.CTkLabel(
-                self, text="🎬 Outro",
+                self, text="Outro",
                 font=ctk.CTkFont(size=10, weight="bold"),
                 text_color=C["emerald"],
             ).pack(side="left", padx=(0, 6))
@@ -127,20 +145,33 @@ class ClipRow(ctk.CTkFrame):
         threading.Thread(target=self._load_meta, daemon=True).start()
 
     def _load_meta(self) -> None:
+        if self._is_title_card:
+            try:
+                data = json.loads(self._path.read_text(encoding="utf-8"))
+                dur  = float(data.get("duration", 5.0))
+                label = f"Title Card  {dur:.1f}s"
+            except Exception:
+                label = "Title Card"
+            try:
+                self.after(0, lambda: self._meta_lbl.configure(text=label))
+            except Exception:
+                pass
+            return
+
         is_photo = self._path.suffix.lower() in IMAGE_EXTENSIONS
         meta = _probe_clip(self._path)
         if meta:
             w = meta.get("width", 0)
             h = meta.get("height", 0)
             if is_photo:
-                label = f"{w}×{h}  📷 Photo"
+                label = f"{w}×{h}  Photo"
             else:
                 dur  = meta.get("duration", 0)
                 mins = int(dur // 60)
                 secs = int(dur % 60)
                 label = f"{w}×{h}  {mins}:{secs:02d}"
         else:
-            label = "📷 Photo" if is_photo else "—"
+            label = "Photo" if is_photo else "—"
         try:
             self.after(0, lambda: self._meta_lbl.configure(text=label))
         except Exception:
@@ -148,12 +179,14 @@ class ClipRow(ctk.CTkFrame):
 
 
 class QueuePanel(ctk.CTkFrame):
-    def __init__(self, parent, **kwargs):
+    def __init__(self, parent, on_add_titlecard: Callable[[Path], None] | None = None,
+                 **kwargs):
         super().__init__(parent, fg_color="transparent", **kwargs)
         self._clips: list[Path] = []
         self._page = 0
         self._pin_intro = False
         self._pin_outro = False
+        self._on_add_titlecard = on_add_titlecard
         self._build()
 
     def _build(self) -> None:
@@ -183,6 +216,15 @@ class QueuePanel(ctk.CTkFrame):
             command=self.clear,
         )
         self._clear_btn.pack(side="right")
+
+        ctk.CTkButton(
+            header, text="+ Title Card",
+            fg_color=C["card2"], text_color=C["warning"],
+            hover_color=C["border"],
+            width=88, height=24,
+            font=ctk.CTkFont(size=11),
+            command=self._show_title_card_dialog,
+        ).pack(side="right", padx=(0, 6))
 
         self._scroll = ctk.CTkScrollableFrame(
             self, fg_color=C["bg2"], corner_radius=8,
@@ -216,6 +258,123 @@ class QueuePanel(ctk.CTkFrame):
             command=self._next_page,
         )
         self._next_btn.pack(side="left")
+
+    # ── Title card dialog ────────────────────────────────────────────────────
+
+    def _show_title_card_dialog(self) -> None:
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Add Title Card")
+        dlg.resizable(False, False)
+        dlg.attributes("-topmost", True)
+        dlg.configure(fg_color=C["bg2"])
+        dlg.grab_set()
+
+        pad = {"padx": 14, "pady": (0, 8)}
+
+        ctk.CTkLabel(dlg, text="Title Card Text",
+                     font=ctk.CTkFont(size=11), text_color=C["text2"],
+                     anchor="w").pack(fill="x", padx=14, pady=(14, 2))
+        txt = ctk.CTkTextbox(dlg, height=80, fg_color=C["card"],
+                             border_color=C["border"], text_color=C["text"],
+                             font=ctk.CTkFont(size=13))
+        txt.pack(fill="x", padx=14, pady=(0, 10))
+
+        row1 = ctk.CTkFrame(dlg, fg_color="transparent")
+        row1.pack(fill="x", padx=14, pady=(0, 8))
+
+        # Background color
+        bg_col = ctk.CTkFrame(row1, fg_color="transparent")
+        bg_col.pack(side="left", expand=True, fill="x", padx=(0, 8))
+        ctk.CTkLabel(bg_col, text="Background", font=ctk.CTkFont(size=11),
+                     text_color=C["text2"], anchor="w").pack(anchor="w")
+        bg_var = ctk.StringVar(value=list(TITLE_CARD_BG_COLORS.keys())[0])
+        ctk.CTkComboBox(bg_col, values=list(TITLE_CARD_BG_COLORS.keys()),
+                        variable=bg_var, fg_color=C["card"],
+                        button_color=C["emerald"], border_color=C["border"],
+                        dropdown_fg_color=C["card"], text_color=C["text"],
+                        font=ctk.CTkFont(size=12)).pack(fill="x")
+
+        # Text color
+        tc_col = ctk.CTkFrame(row1, fg_color="transparent")
+        tc_col.pack(side="right", expand=True, fill="x")
+        ctk.CTkLabel(tc_col, text="Text Color", font=ctk.CTkFont(size=11),
+                     text_color=C["text2"], anchor="w").pack(anchor="w")
+        tc_var = ctk.StringVar(value=list(TEXT_COLORS.keys())[0])
+        ctk.CTkComboBox(tc_col, values=list(TEXT_COLORS.keys()),
+                        variable=tc_var, fg_color=C["card"],
+                        button_color=C["emerald"], border_color=C["border"],
+                        dropdown_fg_color=C["card"], text_color=C["text"],
+                        font=ctk.CTkFont(size=12)).pack(fill="x")
+
+        # Font size
+        fs_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        fs_row.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(fs_row, text="Font Size", font=ctk.CTkFont(size=11),
+                     text_color=C["text2"]).pack(side="left")
+        fs_lbl = ctk.CTkLabel(fs_row, text="80", font=ctk.CTkFont(size=11),
+                              text_color=C["emerald"], width=30)
+        fs_lbl.pack(side="right")
+        fs_slider = ctk.CTkSlider(dlg, from_=30, to=150, number_of_steps=120,
+                                  button_color=C["emerald"],
+                                  button_hover_color=C["emerald_lt"],
+                                  progress_color=C["emerald_dk"],
+                                  fg_color=C["card"],
+                                  command=lambda v: fs_lbl.configure(text=str(int(v))))
+        fs_slider.set(80)
+        fs_slider.pack(fill="x", padx=14, pady=(0, 8))
+
+        # Duration
+        dur_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        dur_row.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(dur_row, text="Duration", font=ctk.CTkFont(size=11),
+                     text_color=C["text2"]).pack(side="left")
+        dur_lbl = ctk.CTkLabel(dur_row, text="5.0 s", font=ctk.CTkFont(size=11),
+                               text_color=C["emerald"], width=42)
+        dur_lbl.pack(side="right")
+        dur_slider = ctk.CTkSlider(dlg, from_=1.0, to=20.0, number_of_steps=190,
+                                   button_color=C["emerald"],
+                                   button_hover_color=C["emerald_lt"],
+                                   progress_color=C["emerald_dk"],
+                                   fg_color=C["card"],
+                                   command=lambda v: dur_lbl.configure(text=f"{v:.1f} s"))
+        dur_slider.set(5.0)
+        dur_slider.pack(fill="x", padx=14, pady=(0, 14))
+
+        def _add() -> None:
+            text = txt.get("1.0", "end").strip()
+            if not text:
+                return
+            TITLE_CARDS_DIR.mkdir(parents=True, exist_ok=True)
+            spec = {
+                "text":       text,
+                "bg_color":   TITLE_CARD_BG_COLORS.get(bg_var.get(), "0x000000"),
+                "text_color": TEXT_COLORS.get(tc_var.get(), "white"),
+                "font_size":  int(fs_slider.get()),
+                "duration":   round(dur_slider.get(), 1),
+            }
+            tc_path = TITLE_CARDS_DIR / f"titlecard_{int(time.time() * 1000)}.titlecard"
+            tc_path.write_text(json.dumps(spec), encoding="utf-8")
+            self._clips.append(tc_path)
+            self._render_page()
+            if self._on_add_titlecard:
+                self._on_add_titlecard(tc_path)
+            dlg.destroy()
+
+        ctk.CTkButton(dlg, text="Add to Queue",
+                      fg_color=C["emerald"], text_color=C["bg"],
+                      hover_color=C["emerald_lt"],
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      height=38, command=_add).pack(
+            fill="x", padx=14, pady=(0, 14))
+
+        # Centre dialog over parent
+        dlg.update_idletasks()
+        pw = self.winfo_toplevel().winfo_x()
+        py = self.winfo_toplevel().winfo_y()
+        pw2 = self.winfo_toplevel().winfo_width()
+        py2 = self.winfo_toplevel().winfo_height()
+        dw, dh = dlg.winfo_width(), dlg.winfo_height()
+        dlg.geometry(f"+{pw + (pw2 - dw)//2}+{py + (py2 - dh)//2}")
 
     # ── Public API ───────────────────────────────────────────────────────────
 

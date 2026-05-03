@@ -240,6 +240,30 @@ TRANSITION_STYLES: dict[str, tuple[str | None, str | None]] = {
     "Hard Cut":              ("cut",        None),
 }
 
+# ── Output format presets ─────────────────────────────────────────────────────
+OUTPUT_PRESETS: dict[str, dict] = {
+    "Custom":                     {},
+    "YouTube 1080p  (16:9)":     {"res": "1920×1080  (1080p)",          "fps": "30 fps  (Standard)"},
+    "YouTube 4K  (16:9)":        {"res": "3840×2160  (4K)",             "fps": "60 fps  (Smooth)"},
+    "Instagram Reels / TikTok":  {"res": "1080×1920  (Vertical 1080p)", "fps": "30 fps  (Standard)"},
+    "Instagram Square":          {"res": "1080×1080  (Square)",          "fps": "30 fps  (Standard)"},
+    "Twitter / X  (720p)":       {"res": "1280×720   (720p)",           "fps": "30 fps  (Standard)"},
+    "Cinematic 24fps  (1080p)":  {"res": "1920×1080  (1080p)",          "fps": "24 fps  (Cinematic)"},
+}
+
+WATERMARK_POSITIONS: list[str] = [
+    "Bottom-Right", "Bottom-Left", "Top-Right", "Top-Left", "Center",
+]
+
+TITLE_CARDS_DIR = APP_DIR / "titlecards"
+
+TITLE_CARD_BG_COLORS: dict[str, str] = {
+    "Black":     "0x000000",
+    "White":     "0xffffff",
+    "Navy":      "0x0a1628",
+    "Dark Gray": "0x1a1a1a",
+}
+
 # System fonts — checked by path on each platform; first existing path wins.
 SYSTEM_FONTS: dict[str, dict[str, list[str]]] = {
     "Arial": {
